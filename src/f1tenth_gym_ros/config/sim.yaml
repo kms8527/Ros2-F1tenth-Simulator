@@ -27,7 +27,8 @@ bridge:
     ego_scan_topic: 'scan'
     ego_odom_topic: 'odom'
     ego_opp_odom_topic: 'opp_odom'
-    ego_drive_topic: 'drive'
+    # Keep simulator commands separate from controllers that publish to /drive.
+    ego_drive_topic: 'sim_drive'
     opp_namespace: 'opp_racecar'
     opp_scan_topic: 'opp_scan'
     opp_odom_topic: 'odom'
@@ -51,9 +52,20 @@ bridge:
     vehicle_params: 'f1tenth'
     restart_simulation: false
     scale: 1.0
+    # Must match smooth-mppi-cuda/config/params.yaml.
+    dynamics_model: 'kinematic'
+    # Used only when dynamics_model is kinematic_mlp.
+    mlp_weights_path: '/home/a/smooth-mppi-cuda/config/kinematic_mlp_no_imu.bin'
+    mppi_dt: 0.02
+    mppi_min_speed: 0.5
+    mppi_max_speed: 4.0
+    # Same identified kinematic command mapping as smooth-mppi-cuda/config/params.yaml.
+    kinematic_steer_scale: 1.1058064699
+    kinematic_steer_bias: -0.0300696939
+    kinematic_no_slip: true
 
     # opponent parameters
-    num_agent: 2
+    num_agent: 1
 
     # ego starting pose on map
     sx: 0.0
@@ -69,6 +81,7 @@ bridge:
     kb_teleop: True
 
     # drive with accel or speed
+    # Kinematic+MLP must consume the same [steer, acceleration] Control as MPPI.
     drive_with_accel: True
 
     # use simulation time

@@ -7,7 +7,7 @@
       "command": "/bin/bash",
       "args": [
         "-lc",
-        "source /opt/ros/foxy/setup.bash && colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Debug"
+        "source /opt/ros/humble/setup.bash && colcon build --symlink-install --packages-select f1tenth_gym_ros"
       ],
       "options": { "cwd": "${workspaceFolder}" },
       "group": { "kind": "build", "isDefault": true },

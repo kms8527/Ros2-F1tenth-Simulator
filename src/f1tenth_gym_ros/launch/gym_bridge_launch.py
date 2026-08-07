@@ -21,6 +21,7 @@
 # SOFTWARE.
 
 from launch import LaunchDescription
+from launch.actions import TimerAction
 from launch_ros.actions import Node
 from launch.substitutions import Command
 from ament_index_python.packages import get_package_share_directory
@@ -61,11 +62,11 @@ def generate_launch_description():
         map_yaml = yaml.safe_load(file)
     map_yaml['resolution'] *= config_dict['bridge']['ros__parameters']['scale']
     origin = map_yaml['origin']
-    scaled_origin = (
+    scaled_origin = [
         origin[0] * config_dict['bridge']['ros__parameters']['scale'],
         origin[1] * config_dict['bridge']['ros__parameters']['scale'],
         origin[2],
-    )
+    ]
     map_yaml['origin'] = scaled_origin
     map_yaml['image'] = 'scaled_map' + config_dict['bridge']['ros__parameters']['map_img_ext']
 
@@ -149,8 +150,10 @@ def generate_launch_description():
     # finalize
     ld.add_action(rviz_node)
     ld.add_action(bridge_node)
-    ld.add_action(nav_lifecycle_node)
     ld.add_action(map_server_node)
+    # The lifecycle manager can otherwise issue configure before map_server's
+    # lifecycle services are ready, leaving RViz without a stable fixed map.
+    ld.add_action(TimerAction(period=1.0, actions=[nav_lifecycle_node]))
     ld.add_action(ego_robot_publisher)
     if has_opp:
         ld.add_action(opp_robot_publisher)

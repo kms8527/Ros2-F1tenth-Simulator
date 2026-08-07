@@ -39,8 +39,8 @@ from visualization_msgs.msg import Marker
 from tf2_ros import TransformBroadcaster
 
 import gymnasium as gym
+import math
 import numpy as np
-from transforms3d import euler
 
 import pathlib
 import sys
@@ -48,6 +48,22 @@ sys.path.append('/home/a/f1tenth_gym_ros/src/f1tenth_gym/')
 from f1tenth_gym.envs.f110_env import F110Env, Track
 
 import time
+
+
+def quaternion_from_yaw(yaw):
+    """Return a quaternion as (w, x, y, z) for a rotation around the Z axis."""
+    half_yaw = yaw * 0.5
+    return math.cos(half_yaw), 0.0, 0.0, math.sin(half_yaw)
+
+
+def yaw_from_quaternion(w, x, y, z):
+    """Return the Z-axis rotation represented by a quaternion."""
+    return math.atan2(
+        2.0 * (w * z + x * y),
+        1.0 - 2.0 * (y * y + z * z),
+    )
+
+
 class GymBridge(Node):
     def __init__(self):
         super().__init__('gym_bridge')
@@ -78,6 +94,14 @@ class GymBridge(Node):
         self.declare_parameter('scale')
         self.declare_parameter('vehicle_params')
         self.declare_parameter('restart_simulation')
+        self.declare_parameter('dynamics_model')
+        self.declare_parameter('mlp_weights_path')
+        self.declare_parameter('mppi_dt')
+        self.declare_parameter('mppi_min_speed')
+        self.declare_parameter('mppi_max_speed')
+        self.declare_parameter('kinematic_steer_scale')
+        self.declare_parameter('kinematic_steer_bias')
+        self.declare_parameter('kinematic_no_slip')
 
         self.declare_parameter('drive_with_accel')
 
@@ -103,6 +127,17 @@ class GymBridge(Node):
             raise ValueError('vehicle_params should be either f1tenth, fullscale, or f1fifth.')
 
         scale = self.get_parameter('scale').value
+        dynamics_model = self.get_parameter('dynamics_model').value
+        sim_timestep = float(self.get_parameter('mppi_dt').value)
+        if dynamics_model in ('kinematic', 'kinematic_mlp'):
+            self.vehicle_params = dict(self.vehicle_params)
+            if dynamics_model == 'kinematic_mlp':
+                self.vehicle_params['mlp_weights_path'] = self.get_parameter('mlp_weights_path').value
+            self.vehicle_params['v_min_mppi'] = float(self.get_parameter('mppi_min_speed').value)
+            self.vehicle_params['v_max_mppi'] = float(self.get_parameter('mppi_max_speed').value)
+            self.vehicle_params['kinematic_steer_scale'] = float(self.get_parameter('kinematic_steer_scale').value)
+            self.vehicle_params['kinematic_steer_bias'] = float(self.get_parameter('kinematic_steer_bias').value)
+            self.vehicle_params['kinematic_no_slip'] = bool(self.get_parameter('kinematic_no_slip').value)
 
         # Split the path and the name
         path = self.get_parameter('map_path').value
@@ -125,10 +160,10 @@ class GymBridge(Node):
                                 config={
                                     "map": loaded_map,
                                     "num_agents": num_agents,
-                                    "timestep": 0.01,
+                                    "timestep": sim_timestep,
                                     "integrator": "rk4",
                                     "control_input": ["accl", "steering_angle"],
-                                    "model": "st",
+                                    "model": dynamics_model,
                                     "observation_config": {"type": "original"},
                                     "params": self.vehicle_params,
                                     "reset_config": {"type": "map_random_static"},
@@ -143,10 +178,10 @@ class GymBridge(Node):
                                 config={
                                     "map": loaded_map,
                                     "num_agents": num_agents,
-                                    "timestep": 0.01,
+                                    "timestep": sim_timestep,
                                     "integrator": "rk4",
                                     "control_input": ["speed", "steering_angle"],
-                                    "model": "st",
+                                    "model": dynamics_model,
                                     "observation_config": {"type": "original"},
                                     "params": self.vehicle_params,
                                     "reset_config": {"type": "map_random_static"},
@@ -183,17 +218,11 @@ class GymBridge(Node):
             sy1 = self.get_parameter('sy1').value
             stheta1 = self.get_parameter('stheta1').value
 
-            # map 7
-            # loaded_map.centerline.sx, loaded_map.centerline.sy, loaded_map.centerline.stheta
-            # poses = np.zeros((len(loaded_map.centerline.xs), 3))
-            # poses[:, 0] = loaded_map.centerline.xs
-            # poses[:, 1] = loaded_map.centerline.ys
-            # poses[:, 2] = loaded_map.centerline.yaws
-            poses = self.select_init_poses()
-
-            options = {"poses": poses}
-
-            # options = {"poses": np.array([[sx, sy, stheta], [sx1, sy1, stheta1]])}
+            # Start deterministically at the poses configured in sim.yaml.
+            # Random centerline poses are only used by the optional restart logic.
+            options = {
+                "poses": np.array([[sx, sy, stheta], [sx1, sy1, stheta1]])
+            }
 
             # levinelobby
             # sx = 1.31628
@@ -240,9 +269,9 @@ class GymBridge(Node):
             self.ego_scan = list(self.obs['scans'][0])
 
         # sim physical step timer
-        self.drive_timer = self.create_timer(0.01, self.drive_timer_callback)
-        # topic publishing timer
-        self.timer = self.create_timer(0.01, self.timer_callback)
+        self.drive_timer = self.create_timer(sim_timestep, self.drive_timer_callback)
+        # Odom/TF are published by drive_timer_callback immediately after the
+        # physics state update.  Do not run a second asynchronous render timer.
         self.start_time = time.time()
 
         # transform broadcaster
@@ -356,7 +385,7 @@ class GymBridge(Node):
         rqy = pose_msg.pose.pose.orientation.y
         rqz = pose_msg.pose.pose.orientation.z
         rqw = pose_msg.pose.pose.orientation.w
-        _, _, rtheta = euler.quat2euler([rqw, rqx, rqy, rqz], axes='sxyz')
+        rtheta = yaw_from_quaternion(rqw, rqx, rqy, rqz)
         if self.has_opp:
             opp_pose = [self.obs['poses_x'][1], self.obs['poses_y'][1], self.obs['poses_theta'][1]]
             self.obs, _ = self.env.reset(options={"poses": np.array([[rx, ry, rtheta], opp_pose])})
@@ -376,7 +405,7 @@ class GymBridge(Node):
             rqy = pose_msg.pose.orientation.y
             rqz = pose_msg.pose.orientation.z
             rqw = pose_msg.pose.orientation.w
-            _, _, rtheta = euler.quat2euler([rqw, rqx, rqy, rqz], axes='sxyz')
+            rtheta = yaw_from_quaternion(rqw, rqx, rqy, rqz)
             self.obs, _ = self.env.reset(options={"poses": np.array([(self.ego_pose), [rx, ry, rtheta]])})
 
         self.opp_drive_published = False
@@ -416,6 +445,10 @@ class GymBridge(Node):
                 self.obs, _, self.done, _, _ = self.env.step(np.array([[self.ego_steer, self.ego_requested_speed], [self.opp_steer, self.opp_requested_speed]]))
 
         self._update_sim_state()
+        # Collision is an episode terminal signal even when automatic restart
+        # is disabled. Previously this topic was only published in the restart
+        # block, so recorders/controllers never observed KMLP wall impacts.
+        self._publish_collision_flag(bool(self.env.collisions.any()))
         if self.get_parameter('restart_simulation').value:
             curr_time = time.time() - self.start_time
             is_close_each_agents = False
@@ -427,16 +460,16 @@ class GymBridge(Node):
                 poses = self.select_init_poses()
                 options = {"poses": poses}
                 self.env.reset(options=options)
-                self._publish_collision_flag(True)
                 self.start_time = time.time()
-            else:
-                self._publish_collision_flag(False)
             
         if self.get_parameter('use_sim_time_bridge').value:
             clock_msg = Clock()
             clock_msg.clock.sec = int(self.env.current_time // 1.0)
             clock_msg.clock.nanosec = int((self.env.current_time % 1.0) * 1e9)
             self.clock_pub.publish(clock_msg)
+
+        # Publish one coherent observation/TF snapshot per physics state.
+        self.timer_callback()
 
     def timer_callback(self):
         if self.sim_paused:
@@ -527,7 +560,7 @@ class GymBridge(Node):
         ego_odom.child_frame_id = self.ego_namespace + '/base_link'
         ego_odom.pose.pose.position.x = self.ego_pose[0]
         ego_odom.pose.pose.position.y = self.ego_pose[1]
-        ego_quat = euler.euler2quat(0., 0., self.ego_pose[2], axes='sxyz')
+        ego_quat = quaternion_from_yaw(self.ego_pose[2])
         ego_odom.pose.pose.orientation.x = ego_quat[1]
         ego_odom.pose.pose.orientation.y = ego_quat[2]
         ego_odom.pose.pose.orientation.z = ego_quat[3]
@@ -544,7 +577,7 @@ class GymBridge(Node):
             opp_odom.child_frame_id = self.opp_namespace + '/base_link'
             opp_odom.pose.pose.position.x = self.opp_pose[0]
             opp_odom.pose.pose.position.y = self.opp_pose[1]
-            opp_quat = euler.euler2quat(0., 0., self.opp_pose[2], axes='sxyz')
+            opp_quat = quaternion_from_yaw(self.opp_pose[2])
             opp_odom.pose.pose.orientation.x = opp_quat[1]
             opp_odom.pose.pose.orientation.y = opp_quat[2]
             opp_odom.pose.pose.orientation.z = opp_quat[3]
@@ -558,7 +591,7 @@ class GymBridge(Node):
 
     def _publish_transforms(self, ts):
         ego_t = Transform()
-        ego_quat = euler.euler2quat(0.0, 0.0, self.ego_pose[2], axes='sxyz')
+        ego_quat = quaternion_from_yaw(self.ego_pose[2])
         ego_t.rotation.x = ego_quat[1]
         ego_t.rotation.y = ego_quat[2]
         ego_t.rotation.z = ego_quat[3]
@@ -579,7 +612,7 @@ class GymBridge(Node):
             opp_t.translation.x = self.opp_pose[0]
             opp_t.translation.y = self.opp_pose[1]
             opp_t.translation.z = 0.0
-            opp_quat = euler.euler2quat(0.0, 0.0, self.opp_pose[2], axes='sxyz')
+            opp_quat = quaternion_from_yaw(self.opp_pose[2])
             opp_t.rotation.x = opp_quat[1]
             opp_t.rotation.y = opp_quat[2]
             opp_t.rotation.z = opp_quat[3]
@@ -594,7 +627,7 @@ class GymBridge(Node):
 
     def _publish_wheel_transforms(self, ts):
         ego_wheel_ts = TransformStamped()
-        ego_wheel_quat = euler.euler2quat(0., 0., self.ego_steer, axes='sxyz')
+        ego_wheel_quat = quaternion_from_yaw(self.ego_steer)
         ego_wheel_ts.transform.rotation.x = ego_wheel_quat[1]
         ego_wheel_ts.transform.rotation.y = ego_wheel_quat[2]
         ego_wheel_ts.transform.rotation.z = ego_wheel_quat[3]
@@ -609,7 +642,7 @@ class GymBridge(Node):
 
         if self.has_opp:
             opp_wheel_ts = TransformStamped()
-            opp_wheel_quat = euler.euler2quat(0., 0., self.opp_steer, axes='sxyz')
+            opp_wheel_quat = quaternion_from_yaw(self.opp_steer)
             opp_wheel_ts.transform.rotation.x = opp_wheel_quat[1]
             opp_wheel_ts.transform.rotation.y = opp_wheel_quat[2]
             opp_wheel_ts.transform.rotation.z = opp_wheel_quat[3]
