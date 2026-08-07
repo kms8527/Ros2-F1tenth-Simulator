@@ -578,6 +578,20 @@ class F110Env(gym.Env):
         action = np.zeros((self.num_agents, 2))
         obs, _, _, _, info = self.step(action)
 
+        # For the MPPI-compatible discrete models this bootstrap is not a real
+        # command. Their speed clamp would otherwise turn zero acceleration
+        # into v_min_mppi (0.5 m/s) immediately after reset. Keep the generated
+        # scans, but restore the actual zero-speed reset state and observation.
+        if self.model in (DynamicModel.KINEMATIC, DynamicModel.KINEMATIC_MLP):
+            self.sim.reset(poses)
+            obs["poses_x"][:] = poses[:, 0]
+            obs["poses_y"][:] = poses[:, 1]
+            obs["poses_theta"][:] = poses[:, 2]
+            obs["linear_vels_x"][:] = 0.0
+            obs["linear_vels_y"][:] = 0.0
+            obs["ang_vels_z"][:] = 0.0
+            self.current_time = 0.0
+
         return obs, info
 
     def update_map(self, map_name: str):

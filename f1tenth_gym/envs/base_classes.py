@@ -30,6 +30,8 @@ Author: Hongrui Zheng
 from __future__ import annotations
 import numpy as np
 from .dynamic_models import DynamicModel
+from .dynamic_models.kinematic_mlp import load_weights, step as kinematic_mlp_step
+from .dynamic_models.kinematic_discrete import step as kinematic_step
 from .action import CarAction
 from .collision_models import collision_multiple, get_vertices
 from .integrator import EulerIntegrator, Integrator
@@ -114,6 +116,13 @@ class RaceCar(object):
         # steering delay buffer
         self.steer_buffer = np.empty((0,))
         self.steer_buffer_size = 2
+
+        self.mlp_weights = None
+        self.mlp_command_history = np.zeros(10, dtype=np.float32)
+        self.mlp_imu = np.zeros(3, dtype=np.float32)
+        self.mlp_ay = np.float32(0.0)
+        if self.model == DynamicModel.KINEMATIC_MLP:
+            self.mlp_weights = load_weights(self.params["mlp_weights_path"])
 
         # collision identifier
         self.in_collision = False
@@ -206,6 +215,9 @@ class RaceCar(object):
         self.state = self.model.get_initial_state(pose=pose, params=self.params)
 
         self.steer_buffer = np.empty((0,))
+        self.mlp_command_history.fill(0.0)
+        self.mlp_imu.fill(0.0)
+        self.mlp_ay = np.float32(0.0)
         # reset scan random generator
         self.scan_rng = np.random.default_rng(seed=self.seed)
 
@@ -284,6 +296,48 @@ class RaceCar(object):
         Returns:
             current_scan
         """
+
+        if self.model == DynamicModel.KINEMATIC:
+            # Match CUDA MPPI Control{steer, accel}, without the MLP residual.
+            self.state = kinematic_step(
+                self.state, raw_steer, vel,
+                dt=self.time_step, lf=self.params["lf"], lr=self.params["lr"],
+                min_speed=self.params["v_min_mppi"],
+                max_speed=self.params["v_max_mppi"],
+                steer_scale=self.params["kinematic_steer_scale"],
+                steer_bias=self.params["kinematic_steer_bias"],
+                no_slip=self.params["kinematic_no_slip"],
+            )
+            current_scan = self.scan_simulator.scan(
+                np.append(self.state[0:2], self.state[4]), self.scan_rng
+            )
+            self.check_ttc(current_scan)
+            return current_scan
+
+        if self.model == DynamicModel.KINEMATIC_MLP:
+            # For this model `vel` is the Ackermann acceleration field. Match
+            # CUDA MPPI Control{steer, accel}; bypass Gym PID/steer delay.
+            previous_vx = np.float32(self.state[3])
+            self.state, self.mlp_command_history, self.mlp_ay = kinematic_mlp_step(
+                self.state, raw_steer, vel, self.mlp_imu,
+                self.mlp_command_history, self.mlp_weights,
+                dt=self.time_step, lf=self.params["lf"], lr=self.params["lr"],
+                min_speed=self.params["v_min_mppi"],
+                max_speed=self.params["v_max_mppi"],
+                steer_scale=self.params["kinematic_steer_scale"],
+                steer_bias=self.params["kinematic_steer_bias"],
+                no_slip=self.params["kinematic_no_slip"],
+            )
+            self.mlp_imu[:] = (self.state[5],
+                               (self.state[3] - previous_vx) / self.time_step,
+                               self.mlp_ay)
+            current_scan = self.scan_simulator.scan(
+                np.append(self.state[0:2], self.state[4]), self.scan_rng
+            )
+            # The custom branch used to return before the standard environment
+            # collision check, allowing the car to pass through walls forever.
+            self.check_ttc(current_scan)
+            return current_scan
 
         # steering delay
         steer = 0.0

@@ -11,12 +11,16 @@ from .kinematic import vehicle_dynamics_ks, get_standardized_state_ks
 from .single_track import vehicle_dynamics_st, get_standardized_state_st
 from .multi_body import init_mb, vehicle_dynamics_mb, get_standardized_state_mb
 from .utils import pid_steer, pid_accl
+from .kinematic_mlp import get_standardized_state_kmlp
+from .kinematic_discrete import get_standardized_state_kinematic
 from typing import Optional
 
 class DynamicModel(Enum):
     KS = 1  # Kinematic Single Track
     ST = 2  # Single Track
     MB = 3  # Multi-body Model
+    KINEMATIC_MLP = 4
+    KINEMATIC = 5
 
     @staticmethod
     def from_string(model: str):
@@ -29,6 +33,10 @@ class DynamicModel(Enum):
             return DynamicModel.ST
         elif model == "mb":
             return DynamicModel.MB
+        elif model == "kinematic_mlp":
+            return DynamicModel.KINEMATIC_MLP
+        elif model == "kinematic":
+            return DynamicModel.KINEMATIC
         else:
             raise ValueError(f"Unknown model type {model}")
 
@@ -46,6 +54,9 @@ class DynamicModel(Enum):
         elif self == DynamicModel.MB:
             # state is a 29D vector
             state = np.zeros(29)
+        elif self in (DynamicModel.KINEMATIC_MLP, DynamicModel.KINEMATIC):
+            # [x, y, steering, vx, yaw, yaw_rate, slip_angle, vy]
+            state = np.zeros(8)
         else:
             raise ValueError(f"Unknown model type {self}")
 
@@ -67,6 +78,10 @@ class DynamicModel(Enum):
             return vehicle_dynamics_st
         elif self == DynamicModel.MB:
             return vehicle_dynamics_mb
+        elif self == DynamicModel.KINEMATIC_MLP:
+            raise RuntimeError("KINEMATIC_MLP uses its discrete RaceCar update")
+        elif self == DynamicModel.KINEMATIC:
+            raise RuntimeError("KINEMATIC uses its discrete RaceCar update")
         else:
             raise ValueError(f"Unknown model type {self}")
 
@@ -82,5 +97,9 @@ class DynamicModel(Enum):
             return get_standardized_state_st
         elif self == DynamicModel.MB:
             return get_standardized_state_mb
+        elif self == DynamicModel.KINEMATIC_MLP:
+            return get_standardized_state_kmlp
+        elif self == DynamicModel.KINEMATIC:
+            return get_standardized_state_kinematic
         else:
             raise ValueError(f"Unknown model type {self}")

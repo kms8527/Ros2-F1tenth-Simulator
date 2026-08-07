@@ -8,8 +8,15 @@ from typing import Tuple, Optional
 import numpy as np
 import yaml
 from PIL import Image
-from PIL.Image import Transpose
 from yamldataclassconfig.config import YamlDataClassConfig
+
+try:
+    # Pillow >= 9.1
+    from PIL.Image import Transpose
+except ImportError:
+    # ROS distributions can provide an older system Pillow.
+    class Transpose:
+        FLIP_TOP_BOTTOM = Image.FLIP_TOP_BOTTOM
 
 from . import Raceline
 from .cubic_spline import CubicSplineND
@@ -207,17 +214,19 @@ class Track:
             occupancy_map[occupancy_map > 128] = 255.0
 
             # if exists, load centerline
-            if (path / f"{path.stem}_centerline.csv").exists():
+            centerline_path = path.parent / f"{path.stem}_centerline.csv"
+            if centerline_path.exists():
                 centerline = Raceline.from_centerline_file(
-                    path / f"{path.stem}_centerline.csv"
+                    centerline_path, track_scale=track_scale
                 )
             else:
                 centerline = None
 
             # if exists, load raceline
-            if (path / f"{path.stem}_raceline.csv").exists():
+            raceline_path = path.parent / f"{path.stem}_raceline.csv"
+            if raceline_path.exists():
                 raceline = Raceline.from_raceline_file(
-                    path / f"{path.stem}_raceline.csv"
+                    raceline_path, track_scale=track_scale
                 )
             else:
                 raceline = centerline
