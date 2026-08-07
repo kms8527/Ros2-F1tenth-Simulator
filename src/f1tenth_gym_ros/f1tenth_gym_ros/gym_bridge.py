@@ -96,12 +96,16 @@ class GymBridge(Node):
         self.declare_parameter('restart_simulation')
         self.declare_parameter('dynamics_model')
         self.declare_parameter('mlp_weights_path')
+        self.declare_parameter('kinematic_noimu_weights_path')
         self.declare_parameter('mppi_dt')
         self.declare_parameter('mppi_min_speed')
         self.declare_parameter('mppi_max_speed')
         self.declare_parameter('kinematic_steer_scale')
         self.declare_parameter('kinematic_steer_bias')
         self.declare_parameter('kinematic_no_slip')
+        self.declare_parameter('speed_servo_kp')
+        self.declare_parameter('mppi_min_accel')
+        self.declare_parameter('mppi_max_accel')
 
         self.declare_parameter('drive_with_accel')
 
@@ -129,10 +133,15 @@ class GymBridge(Node):
         scale = self.get_parameter('scale').value
         dynamics_model = self.get_parameter('dynamics_model').value
         sim_timestep = float(self.get_parameter('mppi_dt').value)
-        if dynamics_model in ('kinematic', 'kinematic_mlp'):
+        if dynamics_model in ('kinematic', 'kinematic_mlp', 'kinematic_noimu_direct_speed'):
             self.vehicle_params = dict(self.vehicle_params)
             if dynamics_model == 'kinematic_mlp':
                 self.vehicle_params['mlp_weights_path'] = self.get_parameter('mlp_weights_path').value
+            elif dynamics_model == 'kinematic_noimu_direct_speed':
+                self.vehicle_params['kinematic_noimu_weights_path'] = self.get_parameter('kinematic_noimu_weights_path').value
+                self.vehicle_params['speed_servo_kp'] = float(self.get_parameter('speed_servo_kp').value)
+                self.vehicle_params['min_accel_mppi'] = float(self.get_parameter('mppi_min_accel').value)
+                self.vehicle_params['max_accel_mppi'] = float(self.get_parameter('mppi_max_accel').value)
             self.vehicle_params['v_min_mppi'] = float(self.get_parameter('mppi_min_speed').value)
             self.vehicle_params['v_max_mppi'] = float(self.get_parameter('mppi_max_speed').value)
             self.vehicle_params['kinematic_steer_scale'] = float(self.get_parameter('kinematic_steer_scale').value)
@@ -153,8 +162,9 @@ class GymBridge(Node):
         self.loaded_map = loaded_map
 
         self.drive_with_accel = self.get_parameter('drive_with_accel').value
+        self.direct_speed_model = dynamics_model == 'kinematic_noimu_direct_speed'
         # env backend
-        if self.drive_with_accel:
+        if self.drive_with_accel and not self.direct_speed_model:
             self.env = gym.make(
                                 "f1tenth_gym:f1tenth-v0",
                                 config={
@@ -433,7 +443,7 @@ class GymBridge(Node):
         if self.sim_paused:
             return  # Skip stepping the sim if paused
 
-        if self.drive_with_accel:
+        if self.drive_with_accel and not self.direct_speed_model:
             if self.ego_drive_published and not self.has_opp:
                 self.obs, _, self.done, _, _ = self.env.step(np.array([[self.ego_steer, self.ego_requested_accel]]))
             elif self.ego_drive_published and self.has_opp and self.opp_drive_published:

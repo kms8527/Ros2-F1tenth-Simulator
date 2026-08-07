@@ -53,15 +53,20 @@ bridge:
     restart_simulation: false
     scale: 1.0
     # Must match smooth-mppi-cuda/config/params.yaml.
-    dynamics_model: 'kinematic'
+    dynamics_model: 'kinematic_noimu_direct_speed'
+    kinematic_noimu_weights_path: /home/a/smooth-mppi-cuda/config/ifac2026_kinematic_noimu_direct_speed.bin
+    lateral_velocity_kf_enabled: false
     # Used only when dynamics_model is kinematic_mlp.
     mlp_weights_path: '/home/a/smooth-mppi-cuda/config/kinematic_mlp_no_imu.bin'
     mppi_dt: 0.02
-    mppi_min_speed: 0.5
-    mppi_max_speed: 4.0
+    mppi_min_speed: -10.0
+    mppi_max_speed: 10.0
+    mppi_min_accel: -8.0
+    mppi_max_accel: 8.5
+    speed_servo_kp: 8.0
     # Same identified kinematic command mapping as smooth-mppi-cuda/config/params.yaml.
-    kinematic_steer_scale: 1.1058064699
-    kinematic_steer_bias: -0.0300696939
+    kinematic_steer_scale: 0.8954927921
+    kinematic_steer_bias: -0.0036726743
     kinematic_no_slip: true
 
     # opponent parameters
