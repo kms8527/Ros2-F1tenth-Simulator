@@ -25,7 +25,7 @@ from rclpy.node import Node
 from rosgraph_msgs.msg import Clock
 from std_msgs.msg import Bool
 
-from sensor_msgs.msg import LaserScan
+from sensor_msgs.msg import LaserScan, Imu
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import PoseStamped
 from geometry_msgs.msg import PoseWithCovarianceStamped
@@ -97,6 +97,8 @@ class GymBridge(Node):
         self.declare_parameter('dynamics_model')
         self.declare_parameter('mlp_weights_path')
         self.declare_parameter('kinematic_noslip_noimu_weights_path')
+        self.declare_parameter('dynamic_mlp_weights_path')
+        self.declare_parameter('dynamic_mlp_model_dt')
         self.declare_parameter('mppi_dt')
         self.declare_parameter('mppi_min_speed')
         self.declare_parameter('mppi_max_speed')
@@ -106,6 +108,20 @@ class GymBridge(Node):
         self.declare_parameter('speed_servo_kp')
         self.declare_parameter('mppi_min_accel')
         self.declare_parameter('mppi_max_accel')
+        self.declare_parameter('speed_reference_accel_time_constant')
+        self.declare_parameter('speed_reference_brake_time_constant')
+        self.declare_parameter('actuator_max_speed_reference_rate')
+        self.declare_parameter('steer_servo_time_constant')
+        self.declare_parameter('actuator_max_steer_rate')
+        self.declare_parameter('kinematic_position_speed_scale')
+        for tire_parameter in ('B_f', 'C_f', 'D_f', 'E_f',
+                               'B_r', 'C_r', 'D_r', 'E_r'):
+            self.declare_parameter('dynamic_mlp_' + tire_parameter)
+        self.declare_parameter('dynamic_mlp_I_z')
+        self.declare_parameter('dynamic_mlp_min_speed')
+        self.declare_parameter('mass')
+        self.declare_parameter('l_f')
+        self.declare_parameter('l_r')
 
         self.declare_parameter('drive_with_accel')
 
@@ -134,7 +150,8 @@ class GymBridge(Node):
         dynamics_model = self.get_parameter('dynamics_model').value
         sim_timestep = float(self.get_parameter('mppi_dt').value)
         if dynamics_model in ('kinematic', 'kinematic_mlp',
-                              'kinematic_noslip_noimu_direct_speed'):
+                              'kinematic_noslip_noimu_direct_speed',
+                              'dynamic_mlp_residual_servo_lag'):
             self.vehicle_params = dict(self.vehicle_params)
             if dynamics_model == 'kinematic_mlp':
                 self.vehicle_params['mlp_weights_path'] = self.get_parameter('mlp_weights_path').value
@@ -143,6 +160,27 @@ class GymBridge(Node):
                 self.vehicle_params['speed_servo_kp'] = float(self.get_parameter('speed_servo_kp').value)
                 self.vehicle_params['min_accel_mppi'] = float(self.get_parameter('mppi_min_accel').value)
                 self.vehicle_params['max_accel_mppi'] = float(self.get_parameter('mppi_max_accel').value)
+            elif dynamics_model == 'dynamic_mlp_residual_servo_lag':
+                self.vehicle_params['dynamic_mlp_weights_path'] = self.get_parameter('dynamic_mlp_weights_path').value
+                self.vehicle_params['dynamic_mlp_model_dt'] = float(self.get_parameter('dynamic_mlp_model_dt').value)
+                self.vehicle_params['speed_servo_kp'] = float(self.get_parameter('speed_servo_kp').value)
+                self.vehicle_params['min_accel_mppi'] = float(self.get_parameter('mppi_min_accel').value)
+                self.vehicle_params['max_accel_mppi'] = float(self.get_parameter('mppi_max_accel').value)
+                self.vehicle_params['speed_reference_accel_time_constant'] = float(self.get_parameter('speed_reference_accel_time_constant').value)
+                self.vehicle_params['speed_reference_brake_time_constant'] = float(self.get_parameter('speed_reference_brake_time_constant').value)
+                self.vehicle_params['actuator_max_speed_reference_rate'] = float(self.get_parameter('actuator_max_speed_reference_rate').value)
+                self.vehicle_params['steer_servo_time_constant'] = float(self.get_parameter('steer_servo_time_constant').value)
+                self.vehicle_params['actuator_max_steer_rate'] = float(self.get_parameter('actuator_max_steer_rate').value)
+                self.vehicle_params['kinematic_position_speed_scale'] = float(self.get_parameter('kinematic_position_speed_scale').value)
+                for tire_parameter in ('B_f', 'C_f', 'D_f', 'E_f',
+                                       'B_r', 'C_r', 'D_r', 'E_r'):
+                    key = 'dynamic_mlp_' + tire_parameter
+                    self.vehicle_params[key] = float(self.get_parameter(key).value)
+                self.vehicle_params['dynamic_mlp_I_z'] = float(self.get_parameter('dynamic_mlp_I_z').value)
+                self.vehicle_params['dynamic_mlp_min_speed'] = float(self.get_parameter('dynamic_mlp_min_speed').value)
+                self.vehicle_params['mass'] = float(self.get_parameter('mass').value)
+                self.vehicle_params['lf'] = float(self.get_parameter('l_f').value)
+                self.vehicle_params['lr'] = float(self.get_parameter('l_r').value)
             self.vehicle_params['v_min_mppi'] = float(self.get_parameter('mppi_min_speed').value)
             self.vehicle_params['v_max_mppi'] = float(self.get_parameter('mppi_max_speed').value)
             self.vehicle_params['kinematic_steer_scale'] = float(self.get_parameter('kinematic_steer_scale').value)
@@ -163,7 +201,9 @@ class GymBridge(Node):
         self.loaded_map = loaded_map
 
         self.drive_with_accel = self.get_parameter('drive_with_accel').value
-        self.direct_speed_model = dynamics_model == 'kinematic_noslip_noimu_direct_speed'
+        self.direct_speed_model = dynamics_model in (
+            'kinematic_noslip_noimu_direct_speed',
+            'dynamic_mlp_residual_servo_lag')
         # env backend
         if self.drive_with_accel and not self.direct_speed_model:
             self.env = gym.make(
@@ -291,6 +331,7 @@ class GymBridge(Node):
         # publishers
         self.ego_scan_pub = self.create_publisher(LaserScan, ego_scan_topic, 1)
         self.ego_odom_pub = self.create_publisher(Odometry, ego_odom_topic, 1)
+        self.ego_imu_pub = self.create_publisher(Imu, '/imu/data', 10)
         self.collision_pub = self.create_publisher(Bool, '/collision0', 1)
         self.ego_drive_published = False
         if num_agents == 2:
@@ -533,6 +574,7 @@ class GymBridge(Node):
 
         # pub tf
         self._publish_odom(ts)
+        self._publish_imu(ts)
         self._publish_transforms(ts)
         self._publish_laser_transforms(ts)
         self._publish_wheel_transforms(ts)
@@ -599,6 +641,20 @@ class GymBridge(Node):
             self.opp_odom_pub.publish(opp_odom)
             self.opp_ego_odom_pub.publish(ego_odom)
             self.ego_opp_odom_pub.publish(opp_odom)
+
+    def _publish_imu(self, ts):
+        """Publish synthetic body-FLU IMU with no additional sign conversion."""
+        imu = Imu()
+        imu.header.stamp = ts
+        imu.header.frame_id = self.ego_namespace + '/base_link'
+        imu.orientation.w = 1.0
+        agent = self.env.unwrapped.sim.agents[0]
+        wz, ax, ay = np.asarray(agent.mlp_imu, dtype=np.float32)
+        imu.angular_velocity.z = float(wz)
+        imu.linear_acceleration.x = float(ax)
+        imu.linear_acceleration.y = float(ay)
+        imu.linear_acceleration.z = 9.81
+        self.ego_imu_pub.publish(imu)
 
     def _publish_transforms(self, ts):
         ego_t = Transform()
