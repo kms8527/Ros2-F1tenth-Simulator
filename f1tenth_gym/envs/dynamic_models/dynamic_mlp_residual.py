@@ -1,0 +1,126 @@
+"""40 ms Pacejka + residual MLP plant matching CUDA MPPI."""
+from pathlib import Path
+import numpy as np
+
+
+def load_weights(path):
+    flat = np.fromfile(Path(path), dtype="<f4")
+    if flat.size != 3563:
+        raise ValueError(f"expected 3563 float32 values, got {flat.size}: {path}")
+    offset = 0
+    def take(count, shape):
+        nonlocal offset
+        value = flat[offset:offset + count].reshape(shape).copy()
+        offset += count
+        return value
+    weights = (take(64*20, (64, 20)), take(64, (64,)),
+               take(32*64, (32, 64)), take(32, (32,)),
+               take(3*32, (3, 32)), take(3, (3,)))
+    return weights, take(20, (20,)), take(20, (20,))
+
+
+def step(state, steer_command, speed_command, command_history, actuator_steer,
+         actuator_speed_reference, weights, mean, std, *, dt=.04,
+         lf=.163, lr=.161, mass=3.74, min_speed=.5, max_speed=4.,
+         min_accel=-1., max_accel=1., speed_servo_kp=.7616888694734905,
+         speed_accel_tau=.04, speed_brake_tau=.02,
+         max_speed_reference_rate=8., steer_scale=.50927964,
+         steer_bias=.01015773, steer_time_constant=.15514851356820727,
+         max_steer_rate=.8344090950084138,
+         position_speed_scale=.8633491306389823,
+         Bf=2.815932661385218, Cf=1.3, Df=.37939550896899304, Ef=0.,
+         Br=.3215940126165719, Cr=1.3, Dr=2.799999998765151, Er=0.,
+         Iz=.04712, low_speed_center=.8,
+         kinematic_yaw_rate_time_constant=.1,
+         kinematic_max_yaw_accel=15.):
+    """Return state/history/actuator states and synthetic FLU [wz, ax, ay].
+
+    State layout is [x,y,steer_cmd,vx,yaw,yaw_rate,beta,vy].  The command is
+    held for one explicit 40 ms rollout knot, exactly as CUDA does.
+    """
+    current = np.asarray(state, dtype=np.float32)
+    history = np.asarray(command_history, dtype=np.float32).reshape(10).copy()
+    dt = np.float32(dt)
+    steer_command = np.float32(steer_command)
+    speed_command = np.float32(np.clip(speed_command, min_speed, max_speed))
+    previous_steer_command = np.float32(history[8])
+
+    # CUDA shifts first: the MLP feature history includes the current command.
+    history[:-2] = history[2:]
+    history[-2:] = (steer_command, speed_command)
+
+    target_steer = np.float32(np.clip(
+        steer_scale*steer_command+steer_bias, -.55, .55))
+    steer_rate = np.float32(np.clip(
+        (target_steer-actuator_steer)/max(steer_time_constant, 1e-3),
+        -max_steer_rate, max_steer_rate))
+    applied_steer = np.float32(np.clip(
+        actuator_steer+steer_rate*dt, -.55, .55))
+
+    speed_tau = speed_accel_tau if speed_command >= actuator_speed_reference else speed_brake_tau
+    reference_rate = np.float32(np.clip(
+        (speed_command-actuator_speed_reference)/max(speed_tau, 1e-3),
+        -max_speed_reference_rate, max_speed_reference_rate))
+    speed_reference = np.float32(actuator_speed_reference+reference_rate*dt)
+
+    vx, vy, yaw_rate = map(np.float32, (current[3], current[7], current[5]))
+    current_speed = np.float32(np.hypot(vx, vy))
+    base_ax = np.float32(np.clip(
+        speed_servo_kp*(speed_reference-current_speed), min_accel, max_accel))
+    safe_vx = np.float32(max(abs(float(vx)), .5))
+    alpha_f = np.float32(applied_steer-np.arctan2(vy+lf*yaw_rate, safe_vx))
+    alpha_r = np.float32(-np.arctan2(vy-lr*yaw_rate, safe_vx))
+    fzf = np.float32(mass*9.81*lr/(lf+lr)); fzr = np.float32(mass*9.81*lf/(lf+lr))
+    bfa, bra = np.float32(Bf*alpha_f), np.float32(Br*alpha_r)
+    front_inner = np.float32(bfa-Ef*(bfa-np.arctan(bfa)))
+    rear_inner = np.float32(bra-Er*(bra-np.arctan(bra)))
+    front_force = np.float32(fzf*Df*np.sin(Cf*np.arctan(front_inner)))
+    rear_force = np.float32(fzr*Dr*np.sin(Cr*np.arctan(rear_inner)))
+    base_ay = np.float32((front_force*np.cos(applied_steer)+rear_force)/mass)
+    base_yaw_accel = np.float32(
+        (lf*front_force*np.cos(applied_steer)-lr*rear_force)/Iz)
+    base_next_vx = np.float32(vx+(base_ax+vy*yaw_rate)*dt)
+    base_next_vy = np.float32(vy+(base_ay-vx*yaw_rate)*dt)
+    base_next_yaw_rate = np.float32(yaw_rate+base_yaw_accel*dt)
+
+    feature = np.concatenate((np.asarray([
+        vx, vy, yaw_rate, steer_command, speed_command, applied_steer,
+        steer_command-previous_steer_command, base_next_vx, base_next_vy,
+        base_next_yaw_rate], np.float32), history))
+    w1, b1, w2, b2, w3, b3 = weights
+    normalized = ((feature-mean)/std).astype(np.float32)
+    hidden1 = np.maximum(w1@normalized+b1, np.float32(0.))
+    hidden2 = np.maximum(w2@hidden1+b2, np.float32(0.))
+    residual = np.clip(w3@hidden2+b3,
+                       np.asarray([-8., -8., -30.], np.float32),
+                       np.asarray([8., 8., 30.], np.float32)).astype(np.float32)
+    gate = np.float32(1./(1.+np.exp(-(abs(float(vx))-low_speed_center)/.2)))
+    residual[1:] *= gate
+
+    next_vx = np.float32(base_next_vx+residual[0]*dt)
+    next_vy = np.float32(base_next_vy+residual[1]*dt)
+    next_yaw_rate = np.float32(base_next_yaw_rate+residual[2]*dt)
+    if abs(float(vx)) < low_speed_center:
+        wheelbase = max(float(lf+lr), 1e-3)
+        kinematic_yaw_rate = float(next_vx)*np.tan(float(applied_steer))/wheelbase
+        yaw_accel = np.clip(
+            (kinematic_yaw_rate-float(yaw_rate)) /
+            max(float(kinematic_yaw_rate_time_constant), 1e-3),
+            -float(kinematic_max_yaw_accel), float(kinematic_max_yaw_accel))
+        next_yaw_rate = np.float32(yaw_rate+yaw_accel*dt)
+        next_vy = np.float32(0.)
+    next_speed = np.float32(np.hypot(next_vx, next_vy))
+    next_beta = np.float32(np.arctan2(next_vy, next_vx))
+    output = current.copy()
+    output[0] = current[0]+position_speed_scale*next_speed*np.cos(current[4]+next_beta)*dt
+    output[1] = current[1]+position_speed_scale*next_speed*np.sin(current[4]+next_beta)*dt
+    output[2] = steer_command
+    output[3] = next_vx
+    output[4] = np.arctan2(np.sin(current[4]+next_yaw_rate*dt),
+                           np.cos(current[4]+next_yaw_rate*dt))
+    output[5] = next_yaw_rate; output[6] = next_beta; output[7] = next_vy
+    predicted_ay = (next_vx*next_yaw_rate if abs(float(vx)) < low_speed_center
+                    else base_ay+residual[1])
+    synthetic_imu = np.asarray((next_yaw_rate, base_ax+residual[0],
+                                predicted_ay), np.float32)
+    return output, history, applied_steer, speed_reference, synthetic_imu

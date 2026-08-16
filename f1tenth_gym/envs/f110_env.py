@@ -582,7 +582,9 @@ class F110Env(gym.Env):
         # command. Their speed clamp would otherwise turn zero acceleration
         # into v_min_mppi (0.5 m/s) immediately after reset. Keep the generated
         # scans, but restore the actual zero-speed reset state and observation.
-        if self.model in (DynamicModel.KINEMATIC, DynamicModel.KINEMATIC_MLP):
+        if self.model in (DynamicModel.KINEMATIC, DynamicModel.KINEMATIC_MLP,
+                          DynamicModel.KINEMATIC_NOSLIP_NOIMU_DIRECT_SPEED,
+                          DynamicModel.DYNAMIC_MLP_RESIDUAL):
             self.sim.reset(poses)
             obs["poses_x"][:] = poses[:, 0]
             obs["poses_y"][:] = poses[:, 1]

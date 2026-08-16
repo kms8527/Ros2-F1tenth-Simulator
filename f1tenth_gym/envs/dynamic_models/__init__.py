@@ -21,6 +21,8 @@ class DynamicModel(Enum):
     MB = 3  # Multi-body Model
     KINEMATIC_MLP = 4
     KINEMATIC = 5
+    KINEMATIC_NOSLIP_NOIMU_DIRECT_SPEED = 6
+    DYNAMIC_MLP_RESIDUAL = 7
 
     @staticmethod
     def from_string(model: str):
@@ -37,6 +39,10 @@ class DynamicModel(Enum):
             return DynamicModel.KINEMATIC_MLP
         elif model == "kinematic":
             return DynamicModel.KINEMATIC
+        elif model == "kinematic_noslip_noimu_direct_speed":
+            return DynamicModel.KINEMATIC_NOSLIP_NOIMU_DIRECT_SPEED
+        elif model in ("dynamic_mlp_residual", "dynamic_mlp_residual_servo_lag"):
+            return DynamicModel.DYNAMIC_MLP_RESIDUAL
         else:
             raise ValueError(f"Unknown model type {model}")
 
@@ -54,7 +60,9 @@ class DynamicModel(Enum):
         elif self == DynamicModel.MB:
             # state is a 29D vector
             state = np.zeros(29)
-        elif self in (DynamicModel.KINEMATIC_MLP, DynamicModel.KINEMATIC):
+        elif self in (DynamicModel.KINEMATIC_MLP, DynamicModel.KINEMATIC,
+                      DynamicModel.KINEMATIC_NOSLIP_NOIMU_DIRECT_SPEED,
+                      DynamicModel.DYNAMIC_MLP_RESIDUAL):
             # [x, y, steering, vx, yaw, yaw_rate, slip_angle, vy]
             state = np.zeros(8)
         else:
@@ -82,6 +90,10 @@ class DynamicModel(Enum):
             raise RuntimeError("KINEMATIC_MLP uses its discrete RaceCar update")
         elif self == DynamicModel.KINEMATIC:
             raise RuntimeError("KINEMATIC uses its discrete RaceCar update")
+        elif self == DynamicModel.KINEMATIC_NOSLIP_NOIMU_DIRECT_SPEED:
+            raise RuntimeError("KINEMATIC_NOSLIP_NOIMU_DIRECT_SPEED uses its discrete RaceCar update")
+        elif self == DynamicModel.DYNAMIC_MLP_RESIDUAL:
+            raise RuntimeError("DYNAMIC_MLP_RESIDUAL uses its discrete RaceCar update")
         else:
             raise ValueError(f"Unknown model type {self}")
 
@@ -99,7 +111,9 @@ class DynamicModel(Enum):
             return get_standardized_state_mb
         elif self == DynamicModel.KINEMATIC_MLP:
             return get_standardized_state_kmlp
-        elif self == DynamicModel.KINEMATIC:
+        elif self in (DynamicModel.KINEMATIC,
+                      DynamicModel.KINEMATIC_NOSLIP_NOIMU_DIRECT_SPEED,
+                      DynamicModel.DYNAMIC_MLP_RESIDUAL):
             return get_standardized_state_kinematic
         else:
             raise ValueError(f"Unknown model type {self}")
