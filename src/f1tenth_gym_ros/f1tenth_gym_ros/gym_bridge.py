@@ -90,6 +90,7 @@ class GymBridge(Node):
         self.declare_parameter('sx1')
         self.declare_parameter('sy1')
         self.declare_parameter('stheta1')
+        self.declare_parameter('static_opponent')
         self.declare_parameter('kb_teleop')
         self.declare_parameter('scale')
         self.declare_parameter('vehicle_params')
@@ -299,6 +300,8 @@ class GymBridge(Node):
             # stheta1 = -0.62778
 
             self.opp_pose = [sx1, sy1, stheta1]
+            self.static_opponent = bool(self.get_parameter('static_opponent').value)
+            self.static_opponent_pose = np.array([sx1, sy1, stheta1], dtype=float)
             self.opp_speed = [0.0, 0.0, 0.0]
             self.opp_requested_speed = 0.0
             self.opp_requested_accel = 0.0
@@ -458,7 +461,29 @@ class GymBridge(Node):
             rqz = pose_msg.pose.orientation.z
             rqw = pose_msg.pose.orientation.w
             rtheta = yaw_from_quaternion(rqw, rqx, rqy, rqz)
-            self.obs, _ = self.env.reset(options={"poses": np.array([(self.ego_pose), [rx, ry, rtheta]])})
+            new_opponent_pose = np.array([rx, ry, rtheta], dtype=float)
+
+            # RViz's 2D Goal Pose moves only the opponent. Resetting the whole
+            # environment here also resets the ego dynamics, while failing to
+            # update static_opponent_pose makes the 100 Hz pinning logic move
+            # the opponent straight back on the next simulation step.
+            self.static_opponent_pose = new_opponent_pose.copy()
+            self.env.unwrapped.sim.agents[1].reset(new_opponent_pose)
+            self.obs['poses_x'][1] = rx
+            self.obs['poses_y'][1] = ry
+            self.obs['poses_theta'][1] = rtheta
+            self.obs['linear_vels_x'][1] = 0.0
+            self.obs['linear_vels_y'][1] = 0.0
+            self.obs['ang_vels_z'][1] = 0.0
+            self.opp_pose = [rx, ry, rtheta]
+            self.opp_speed = [0.0, 0.0, 0.0]
+            self.opp_requested_speed = 0.0
+            self.opp_requested_accel = 0.0
+            self.opp_steer = 0.0
+            self._update_sim_state()
+            self.get_logger().info(
+                f'Moved opponent with /goal_pose to x={rx:.3f}, '
+                f'y={ry:.3f}, yaw={rtheta:.3f}')
 
         self.opp_drive_published = False
 
@@ -488,13 +513,33 @@ class GymBridge(Node):
         if self.drive_with_accel and not self.direct_speed_model:
             if self.ego_drive_published and not self.has_opp:
                 self.obs, _, self.done, _, _ = self.env.step(np.array([[self.ego_steer, self.ego_requested_accel]]))
-            elif self.ego_drive_published and self.has_opp and self.opp_drive_published:
-                self.obs, _, self.done, _, _ = self.env.step(np.array([[self.ego_steer, self.ego_requested_accel], [self.opp_steer, self.opp_requested_accel]]))
+            elif self.ego_drive_published and self.has_opp:
+                # A second simulated car can be used as a stationary obstacle.
+                # If no opponent controller is publishing, keep it stopped
+                # instead of freezing the entire simulation while waiting for
+                # /opp_drive.
+                opp_steer = self.opp_steer if self.opp_drive_published else 0.0
+                opp_accel = self.opp_requested_accel if self.opp_drive_published else 0.0
+                self.obs, _, self.done, _, _ = self.env.step(np.array([[self.ego_steer, self.ego_requested_accel], [opp_steer, opp_accel]]))
         else:
             if self.ego_drive_published and not self.has_opp:
                 self.obs, _, self.done, _, _ = self.env.step(np.array([[self.ego_steer, self.ego_requested_speed]]))
-            elif self.ego_drive_published and self.has_opp and self.opp_drive_published:
-                self.obs, _, self.done, _, _ = self.env.step(np.array([[self.ego_steer, self.ego_requested_speed], [self.opp_steer, self.opp_requested_speed]]))
+            elif self.ego_drive_published and self.has_opp:
+                opp_steer = self.opp_steer if self.opp_drive_published else 0.0
+                opp_speed = self.opp_requested_speed if self.opp_drive_published else 0.0
+                self.obs, _, self.done, _, _ = self.env.step(np.array([[self.ego_steer, self.ego_requested_speed], [opp_steer, opp_speed]]))
+
+        if self.has_opp and self.static_opponent:
+            # The learned vehicle dynamics can drift even for a zero speed
+            # command.  A test obstacle is part of the environment, not a
+            # controlled vehicle, so pin its complete state after every step.
+            self.env.unwrapped.sim.agents[1].reset(self.static_opponent_pose)
+            self.obs['poses_x'][1] = self.static_opponent_pose[0]
+            self.obs['poses_y'][1] = self.static_opponent_pose[1]
+            self.obs['poses_theta'][1] = self.static_opponent_pose[2]
+            self.obs['linear_vels_x'][1] = 0.0
+            self.obs['linear_vels_y'][1] = 0.0
+            self.obs['ang_vels_z'][1] = 0.0
 
         self._update_sim_state()
         # Collision is an episode terminal signal even when automatic restart

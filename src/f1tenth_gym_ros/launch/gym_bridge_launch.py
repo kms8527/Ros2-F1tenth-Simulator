@@ -39,12 +39,20 @@ def generate_launch_description():
     has_opp = config_dict['bridge']['ros__parameters']['num_agent'] > 1
     teleop = config_dict['bridge']['ros__parameters']['kb_teleop']
     use_sim_time = config_dict['bridge']['ros__parameters']['use_sim_time']
+    obstacle_override = {}
+    for environment_name, parameter_name in (
+        ('F1TENTH_OBSTACLE_X', 'sx1'),
+        ('F1TENTH_OBSTACLE_Y', 'sy1'),
+        ('F1TENTH_OBSTACLE_YAW', 'stheta1')):
+        value = os.environ.get(environment_name)
+        if value is not None:
+            obstacle_override[parameter_name] = float(value)
 
     bridge_node = Node(
         package='f1tenth_gym_ros',
         executable='gym_bridge',
         name='bridge',
-        parameters=[config, {
+        parameters=[config, obstacle_override, {
             'use_sim_time': False,  # Always use real time for the bridge node
             'use_sim_time_bridge': use_sim_time, # Whether to internally use and publish sim time
             }],

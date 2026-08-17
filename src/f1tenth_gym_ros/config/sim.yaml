@@ -94,17 +94,26 @@ bridge:
     kinematic_no_slip: true
 
     # opponent parameters
-    num_agent: 1
+    num_agent: 2
 
     # ego starting pose on map
-    sx: 0.0
-    sy: 0.0
-    stheta: 0.0
+    # Low-curvature Map1 segment (centerline index 186).  Starting at the old
+    # origin placed the car immediately before a tightening bend and made the
+    # first uninformed MPPI population prone to selecting an off-map path.
+    # Keep normal racing speed; only move the deterministic spawn.
+    sx: -1.796
+    sy: -5.478
+    stheta: 1.541
 
     # opp starting pose on map
-    sx1: 2.0
-    sy1: 0.5
-    stheta1: 0.0
+    # Stationary obstacle on a wide Map1 section.  With no
+    # /opp_drive publisher gym_bridge holds this car at zero speed.
+    # Placed on the obstacle-free MPPI racing line measured in the baseline
+    # run; maintaining that line now causes a physical collision.
+    sx1: 2.38
+    sy1: -3.48
+    stheta1: -2.02
+    static_opponent: true
 
     # teleop
     kb_teleop: True
