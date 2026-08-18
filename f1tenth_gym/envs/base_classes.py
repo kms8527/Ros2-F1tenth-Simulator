@@ -123,6 +123,7 @@ class RaceCar(object):
         self.mlp_command_history = np.zeros(10, dtype=np.float32)
         self.mlp_imu = np.zeros(3, dtype=np.float32)
         self.mlp_ay = np.float32(0.0)
+        self.mlp_vx_history = None
         if self.model == DynamicModel.KINEMATIC_MLP:
             self.mlp_weights = load_weights(self.params["mlp_weights_path"])
         elif self.model == DynamicModel.KINEMATIC_NOSLIP_NOIMU_DIRECT_SPEED:
@@ -238,6 +239,7 @@ class RaceCar(object):
         self.mlp_command_history.fill(0.0)
         self.mlp_imu.fill(0.0)
         self.mlp_ay = np.float32(0.0)
+        self.mlp_vx_history = None
         self.mlp_actuator_steer = np.float32(0.0)
         self.mlp_speed_reference = np.float32(0.0)
         self.mlp_substep_index = 0
@@ -330,11 +332,12 @@ class RaceCar(object):
                 self.mlp_substep_start = self.state.copy()
                 (self.mlp_substep_target, self.mlp_command_history,
                  self.mlp_actuator_steer, self.mlp_speed_reference,
-                 self.mlp_imu) = dynamic_residual_step(
+                 self.mlp_imu, self.mlp_vx_history) = dynamic_residual_step(
                     self.mlp_substep_start, raw_steer, vel,
                     self.mlp_command_history, self.mlp_actuator_steer,
                     self.mlp_speed_reference, self.mlp_weights,
-                    self.direct_mean, self.direct_std, dt=self.mlp_model_dt,
+                    self.direct_mean, self.direct_std,
+                    vx_history=self.mlp_vx_history, dt=self.mlp_model_dt,
                     lf=self.params["lf"], lr=self.params["lr"], mass=self.params["mass"],
                     min_speed=self.params["v_min_mppi"], max_speed=self.params["v_max_mppi"],
                     min_accel=self.params["min_accel_mppi"], max_accel=self.params["max_accel_mppi"],

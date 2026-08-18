@@ -5,22 +5,25 @@ import numpy as np
 
 def load_weights(path):
     flat = np.fromfile(Path(path), dtype="<f4")
-    if flat.size != 3563:
-        raise ValueError(f"expected 3563 float32 values, got {flat.size}: {path}")
+    if flat.size not in (3563, 3827):
+        raise ValueError(
+            f"expected 3563 (20-D) or 3827 (24-D) float32 values, "
+            f"got {flat.size}: {path}")
+    input_dim = 24 if flat.size == 3827 else 20
     offset = 0
     def take(count, shape):
         nonlocal offset
         value = flat[offset:offset + count].reshape(shape).copy()
         offset += count
         return value
-    weights = (take(64*20, (64, 20)), take(64, (64,)),
+    weights = (take(64*input_dim, (64, input_dim)), take(64, (64,)),
                take(32*64, (32, 64)), take(32, (32,)),
                take(3*32, (3, 32)), take(3, (3,)))
-    return weights, take(20, (20,)), take(20, (20,))
+    return weights, take(input_dim, (input_dim,)), take(input_dim, (input_dim,))
 
 
 def step(state, steer_command, speed_command, command_history, actuator_steer,
-         actuator_speed_reference, weights, mean, std, *, dt=.04,
+         actuator_speed_reference, weights, mean, std, *, vx_history=None, dt=.04,
          lf=.163, lr=.161, mass=3.74, min_speed=.5, max_speed=4.,
          min_accel=-1., max_accel=1., speed_servo_kp=.7616888694734905,
          speed_accel_tau=.04, speed_brake_tau=.02,
@@ -87,6 +90,13 @@ def step(state, steer_command, speed_command, command_history, actuator_steer,
         vx, vy, yaw_rate, steer_command, speed_command, applied_steer,
         steer_command-previous_steer_command, base_next_vx, base_next_vy,
         base_next_yaw_rate], np.float32), history))
+    next_vx_history = None
+    if mean.size == 24:
+        if vx_history is None:
+            vx_history = np.full(5, vx, dtype=np.float32)
+        else:
+            vx_history = np.asarray(vx_history, dtype=np.float32).reshape(5)
+        feature = np.concatenate((feature, np.diff(vx_history))).astype(np.float32)
     w1, b1, w2, b2, w3, b3 = weights
     normalized = ((feature-mean)/std).astype(np.float32)
     hidden1 = np.maximum(w1@normalized+b1, np.float32(0.))
@@ -123,4 +133,8 @@ def step(state, steer_command, speed_command, command_history, actuator_steer,
                     else base_ay+residual[1])
     synthetic_imu = np.asarray((next_yaw_rate, base_ax+residual[0],
                                 predicted_ay), np.float32)
-    return output, history, applied_steer, speed_reference, synthetic_imu
+    if mean.size == 24:
+        next_vx_history = np.concatenate(
+            (vx_history[1:], np.asarray([next_vx], np.float32)))
+    return (output, history, applied_steer, speed_reference, synthetic_imu,
+            next_vx_history)

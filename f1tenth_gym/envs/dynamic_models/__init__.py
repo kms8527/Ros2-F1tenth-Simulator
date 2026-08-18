@@ -41,7 +41,8 @@ class DynamicModel(Enum):
             return DynamicModel.KINEMATIC
         elif model == "kinematic_noslip_noimu_direct_speed":
             return DynamicModel.KINEMATIC_NOSLIP_NOIMU_DIRECT_SPEED
-        elif model in ("dynamic_mlp_residual", "dynamic_mlp_residual_servo_lag"):
+        elif model in ("dynamic_mlp_residual", "dynamic_mlp_residual_servo_lag",
+                      "dynamic_mlp_residual_servo_lag_vx_delta_24d"):
             return DynamicModel.DYNAMIC_MLP_RESIDUAL
         else:
             raise ValueError(f"Unknown model type {model}")
