@@ -54,6 +54,7 @@ bridge:
     restart_simulation: false
     scale: 1.0
     # Must match smooth-mppi-cuda/config/params.yaml.
+    # Same adaptive-KF-compatible 20-D residual plant as CUDA MPPI.
     dynamics_model: dynamic_mlp_residual_servo_lag
     kinematic_noslip_noimu_weights_path: /home/a/smooth-mppi-cuda/config/ifac0807_strict_noslip_noimu_16d.bin
     lateral_velocity_kf_enabled: false
@@ -64,6 +65,7 @@ bridge:
     mppi_dt: 0.01
     dynamic_mlp_model_dt: 0.04
     dynamic_mlp_weights_path: /home/a/smooth-mppi-cuda/config/dynamic_40ms_residual_servo_lag.bin
+    dynamic_mlp_vx_delta_weights_path: /home/a/smooth-mppi-cuda/config/dynamic_40ms_vx_delta_history_24d.bin
     mppi_min_speed: 0.5
     mppi_max_speed: 4.0
     mppi_min_accel: -1.0

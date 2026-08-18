@@ -99,6 +99,7 @@ class GymBridge(Node):
         self.declare_parameter('mlp_weights_path')
         self.declare_parameter('kinematic_noslip_noimu_weights_path')
         self.declare_parameter('dynamic_mlp_weights_path')
+        self.declare_parameter('dynamic_mlp_vx_delta_weights_path')
         self.declare_parameter('dynamic_mlp_model_dt')
         self.declare_parameter('mppi_dt')
         self.declare_parameter('mppi_min_speed')
@@ -152,7 +153,8 @@ class GymBridge(Node):
         sim_timestep = float(self.get_parameter('mppi_dt').value)
         if dynamics_model in ('kinematic', 'kinematic_mlp',
                               'kinematic_noslip_noimu_direct_speed',
-                              'dynamic_mlp_residual_servo_lag'):
+                              'dynamic_mlp_residual_servo_lag',
+                              'dynamic_mlp_residual_servo_lag_vx_delta_24d'):
             self.vehicle_params = dict(self.vehicle_params)
             if dynamics_model == 'kinematic_mlp':
                 self.vehicle_params['mlp_weights_path'] = self.get_parameter('mlp_weights_path').value
@@ -161,8 +163,12 @@ class GymBridge(Node):
                 self.vehicle_params['speed_servo_kp'] = float(self.get_parameter('speed_servo_kp').value)
                 self.vehicle_params['min_accel_mppi'] = float(self.get_parameter('mppi_min_accel').value)
                 self.vehicle_params['max_accel_mppi'] = float(self.get_parameter('mppi_max_accel').value)
-            elif dynamics_model == 'dynamic_mlp_residual_servo_lag':
-                self.vehicle_params['dynamic_mlp_weights_path'] = self.get_parameter('dynamic_mlp_weights_path').value
+            elif dynamics_model in ('dynamic_mlp_residual_servo_lag',
+                                     'dynamic_mlp_residual_servo_lag_vx_delta_24d'):
+                weight_parameter = ('dynamic_mlp_vx_delta_weights_path'
+                    if dynamics_model.endswith('vx_delta_24d')
+                    else 'dynamic_mlp_weights_path')
+                self.vehicle_params['dynamic_mlp_weights_path'] = self.get_parameter(weight_parameter).value
                 self.vehicle_params['dynamic_mlp_model_dt'] = float(self.get_parameter('dynamic_mlp_model_dt').value)
                 self.vehicle_params['speed_servo_kp'] = float(self.get_parameter('speed_servo_kp').value)
                 self.vehicle_params['min_accel_mppi'] = float(self.get_parameter('mppi_min_accel').value)
@@ -204,7 +210,8 @@ class GymBridge(Node):
         self.drive_with_accel = self.get_parameter('drive_with_accel').value
         self.direct_speed_model = dynamics_model in (
             'kinematic_noslip_noimu_direct_speed',
-            'dynamic_mlp_residual_servo_lag')
+            'dynamic_mlp_residual_servo_lag',
+            'dynamic_mlp_residual_servo_lag_vx_delta_24d')
         # env backend
         if self.drive_with_accel and not self.direct_speed_model:
             self.env = gym.make(
