@@ -34,6 +34,7 @@ from .dynamic_models.kinematic_mlp import load_weights, step as kinematic_mlp_st
 from .dynamic_models.kinematic_discrete import step as kinematic_step
 from .dynamic_models.kinematic_noimu_direct import load_weights as load_direct_weights, step as direct_speed_step
 from .dynamic_models.dynamic_mlp_residual import load_weights as load_dynamic_residual_weights, step as dynamic_residual_step
+from .dynamic_models.simulator_gru import SimulatorGRUPlant
 from .action import CarAction
 from .collision_models import collision_multiple, get_vertices
 from .integrator import EulerIntegrator, Integrator
@@ -124,6 +125,7 @@ class RaceCar(object):
         self.mlp_imu = np.zeros(3, dtype=np.float32)
         self.mlp_ay = np.float32(0.0)
         self.mlp_vx_history = None
+        self.simulator_gru = None
         if self.model == DynamicModel.KINEMATIC_MLP:
             self.mlp_weights = load_weights(self.params["mlp_weights_path"])
         elif self.model == DynamicModel.KINEMATIC_NOSLIP_NOIMU_DIRECT_SPEED:
@@ -132,10 +134,18 @@ class RaceCar(object):
         elif self.model == DynamicModel.DYNAMIC_MLP_RESIDUAL:
             self.mlp_weights, self.direct_mean, self.direct_std = load_dynamic_residual_weights(
                 self.params["dynamic_mlp_weights_path"])
+        elif self.model == DynamicModel.SIMULATOR_GRU:
+            self.simulator_gru = SimulatorGRUPlant(
+                self.params["simulator_gru_model_path"],
+                self.params.get("simulator_gru_history_steps", 50),
+                self.params.get("simulator_gru_model_dt", .02))
         self.mlp_actuator_steer = np.float32(0.0)
         self.mlp_speed_reference = np.float32(0.0)
+        model_dt_key = ("simulator_gru_model_dt"
+                        if self.model == DynamicModel.SIMULATOR_GRU
+                        else "dynamic_mlp_model_dt")
         self.mlp_model_dt = np.float32(
-            self.params.get("dynamic_mlp_model_dt", self.time_step))
+            self.params.get(model_dt_key, self.time_step))
         model_substeps = float(self.mlp_model_dt) / float(self.time_step)
         self.mlp_model_substeps = max(1, int(round(model_substeps)))
         if abs(model_substeps - self.mlp_model_substeps) > 1.0e-6:
@@ -144,6 +154,8 @@ class RaceCar(object):
         self.mlp_substep_index = 0
         self.mlp_substep_start = None
         self.mlp_substep_target = None
+        if self.simulator_gru is not None:
+            self.simulator_gru.reset()
 
         # collision identifier
         self.in_collision = False
@@ -245,6 +257,8 @@ class RaceCar(object):
         self.mlp_substep_index = 0
         self.mlp_substep_start = None
         self.mlp_substep_target = None
+        if self.simulator_gru is not None:
+            self.simulator_gru.reset()
         # reset scan random generator
         self.scan_rng = np.random.default_rng(seed=self.seed)
 
@@ -324,6 +338,35 @@ class RaceCar(object):
             current_scan
         """
 
+        if self.model == DynamicModel.SIMULATOR_GRU:
+            if self.mlp_substep_index == 0:
+                self.mlp_substep_start = self.state.copy()
+                self.mlp_substep_target = self.simulator_gru.step(
+                    self.state, raw_steer, vel,
+                    steer_scale=self.params["kinematic_steer_scale"],
+                    steer_bias=self.params["kinematic_steer_bias"],
+                    steer_tau=self.params["steer_servo_time_constant"],
+                    max_steer_rate=self.params["actuator_max_steer_rate"],
+                    speed_accel_tau=self.params["speed_reference_accel_time_constant"],
+                    speed_brake_tau=self.params["speed_reference_brake_time_constant"],
+                    max_speed_reference_rate=self.params["actuator_max_speed_reference_rate"],
+                    position_speed_scale=self.params["kinematic_position_speed_scale"])
+            self.mlp_substep_index += 1
+            fraction=np.float32(self.mlp_substep_index/self.mlp_model_substeps)
+            self.state=self.mlp_substep_start+fraction*(self.mlp_substep_target-self.mlp_substep_start)
+            self.state[4]=self.mlp_substep_start[4]+fraction*np.arctan2(
+                np.sin(self.mlp_substep_target[4]-self.mlp_substep_start[4]),
+                np.cos(self.mlp_substep_target[4]-self.mlp_substep_start[4]))
+            # Expose the GRU plant's body-FLU inertial output to gym_bridge.
+            # state[5] is the interpolated yaw rate; accel contains the ax/ay
+            # predicted for this 20 ms GRU transition.
+            self.mlp_imu[:] = (self.state[5],
+                               self.simulator_gru.accel[0],
+                               self.simulator_gru.accel[1])
+            if self.mlp_substep_index == self.mlp_model_substeps:
+                self.state=self.mlp_substep_target;self.mlp_substep_index=0
+            current_scan=self.scan_simulator.scan(np.append(self.state[0:2],self.state[4]),self.scan_rng);self.check_ttc(current_scan);return current_scan
+
         if self.model == DynamicModel.DYNAMIC_MLP_RESIDUAL:
             # Evaluate the learned model once per 40 ms MPPI knot, then expose
             # its transition as four 10 ms states.  Re-evaluating the 40 ms
@@ -337,6 +380,7 @@ class RaceCar(object):
                     self.mlp_command_history, self.mlp_actuator_steer,
                     self.mlp_speed_reference, self.mlp_weights,
                     self.direct_mean, self.direct_std,
+                    current_accel=self.mlp_imu[1:3],
                     vx_history=self.mlp_vx_history, dt=self.mlp_model_dt,
                     lf=self.params["lf"], lr=self.params["lr"], mass=self.params["mass"],
                     min_speed=self.params["v_min_mppi"], max_speed=self.params["v_max_mppi"],
@@ -354,7 +398,14 @@ class RaceCar(object):
                     Br=self.params["dynamic_mlp_B_r"], Cr=self.params["dynamic_mlp_C_r"],
                     Dr=self.params["dynamic_mlp_D_r"], Er=self.params["dynamic_mlp_E_r"],
                     Iz=self.params["dynamic_mlp_I_z"],
-                    low_speed_center=self.params["dynamic_mlp_min_speed"])
+                    low_speed_center=self.params["dynamic_mlp_min_speed"],
+                    max_residual_yaw_accel=self.params["dynamic_mlp_max_residual_yaw_accel"],
+                    residual_gate_steer_start=self.params["dynamic_mlp_residual_gate_steer_start"],
+                    residual_gate_steer_end=self.params["dynamic_mlp_residual_gate_steer_end"],
+                    max_total_yaw_accel=self.params["dynamic_mlp_max_total_yaw_accel"],
+                    yaw_rate_kinematic_scale=self.params["dynamic_mlp_yaw_rate_kinematic_scale"],
+                    yaw_rate_margin=self.params["dynamic_mlp_yaw_rate_margin"],
+                    yaw_rate_lateral_accel_limit=self.params["dynamic_mlp_yaw_rate_lateral_accel_limit"])
             self.mlp_substep_index += 1
             fraction = np.float32(
                 self.mlp_substep_index / self.mlp_model_substeps)

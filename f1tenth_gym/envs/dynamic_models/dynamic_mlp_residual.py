@@ -5,11 +5,11 @@ import numpy as np
 
 def load_weights(path):
     flat = np.fromfile(Path(path), dtype="<f4")
-    if flat.size not in (3563, 3827):
+    if flat.size not in (3563, 3695, 3827):
         raise ValueError(
-            f"expected 3563 (20-D) or 3827 (24-D) float32 values, "
+            f"expected 3563 (20-D), 3695 (22-D IMU), or 3827 (24-D) float32 values, "
             f"got {flat.size}: {path}")
-    input_dim = 24 if flat.size == 3827 else 20
+    input_dim = {3563: 20, 3695: 22, 3827: 24}[flat.size]
     offset = 0
     def take(count, shape):
         nonlocal offset
@@ -24,6 +24,7 @@ def load_weights(path):
 
 def step(state, steer_command, speed_command, command_history, actuator_steer,
          actuator_speed_reference, weights, mean, std, *, vx_history=None, dt=.04,
+         current_accel=None,
          lf=.163, lr=.161, mass=3.74, min_speed=.5, max_speed=4.,
          min_accel=-1., max_accel=1., speed_servo_kp=.7616888694734905,
          speed_accel_tau=.04, speed_brake_tau=.02,
@@ -35,7 +36,10 @@ def step(state, steer_command, speed_command, command_history, actuator_steer,
          Br=.3215940126165719, Cr=1.3, Dr=2.799999998765151, Er=0.,
          Iz=.04712, low_speed_center=.8,
          kinematic_yaw_rate_time_constant=.1,
-         kinematic_max_yaw_accel=15.):
+         kinematic_max_yaw_accel=15., max_residual_yaw_accel=12.,
+         residual_gate_steer_start=.4, residual_gate_steer_end=.4788,
+         max_total_yaw_accel=12., yaw_rate_kinematic_scale=.75,
+         yaw_rate_margin=.35, yaw_rate_lateral_accel_limit=9.5):
     """Return state/history/actuator states and synthetic FLU [wz, ax, ay].
 
     State layout is [x,y,steer_cmd,vx,yaw,yaw_rate,beta,vy].  The command is
@@ -67,7 +71,11 @@ def step(state, steer_command, speed_command, command_history, actuator_steer,
     speed_reference = np.float32(actuator_speed_reference+reference_rate*dt)
 
     vx, vy, yaw_rate = map(np.float32, (current[3], current[7], current[5]))
-    current_speed = np.float32(np.hypot(vx, vy))
+    # CUDA and training contract use longitudinal body velocity here.  Using
+    # hypot(vx, vy) makes a negative vx look like excessive positive speed,
+    # commands braking, and can drive the simulated vehicle backwards without
+    # bound after one adverse residual step.
+    current_speed = vx
     base_ax = np.float32(np.clip(
         speed_servo_kp*(speed_reference-current_speed), min_accel, max_accel))
     safe_vx = np.float32(max(abs(float(vx)), .5))
@@ -91,6 +99,11 @@ def step(state, steer_command, speed_command, command_history, actuator_steer,
         steer_command-previous_steer_command, base_next_vx, base_next_vy,
         base_next_yaw_rate], np.float32), history))
     next_vx_history = None
+    if mean.size == 22:
+        if current_accel is None:
+            current_accel = np.zeros(2, dtype=np.float32)
+        feature = np.concatenate(
+            (feature, np.asarray(current_accel, dtype=np.float32).reshape(2)))
     if mean.size == 24:
         if vx_history is None:
             vx_history = np.full(5, vx, dtype=np.float32)
@@ -104,14 +117,36 @@ def step(state, steer_command, speed_command, command_history, actuator_steer,
     residual = np.clip(w3@hidden2+b3,
                        np.asarray([-8., -8., -30.], np.float32),
                        np.asarray([8., 8., 30.], np.float32)).astype(np.float32)
+    # CUDA intentionally uses the identified vx-command servo without an MLP
+    # longitudinal correction; keep the simulator plant identical.
+    residual[0] = np.float32(0.)
     gate = np.float32(1./(1.+np.exp(-(abs(float(vx))-low_speed_center)/.2)))
     residual[1:] *= gate
+
+    residual[2] = np.float32(np.clip(
+        residual[2], -max_residual_yaw_accel, max_residual_yaw_accel))
+    steer_gate_span = max(
+        float(residual_gate_steer_end-residual_gate_steer_start), 1e-4)
+    steer_gate = np.float32(np.clip(
+        (residual_gate_steer_end-abs(float(applied_steer))) /
+        steer_gate_span, 0., 1.))
+    residual[1:] *= steer_gate
 
     next_vx = np.float32(base_next_vx+residual[0]*dt)
     next_vy = np.float32(base_next_vy+residual[1]*dt)
     next_yaw_rate = np.float32(base_next_yaw_rate+residual[2]*dt)
+    max_yaw_delta = np.float32(max_total_yaw_accel*dt)
+    next_yaw_rate = np.float32(yaw_rate+np.clip(
+        next_yaw_rate-yaw_rate, -max_yaw_delta, max_yaw_delta))
+    wheelbase = max(float(lf+lr), 1e-3)
+    kinematic_yaw = abs(float(next_vx)*np.tan(float(applied_steer))/wheelbase)
+    friction_yaw = float(yaw_rate_lateral_accel_limit) / max(abs(float(next_vx)), .5)
+    yaw_envelope = min(
+        float(yaw_rate_kinematic_scale)*kinematic_yaw+float(yaw_rate_margin),
+        friction_yaw)
+    next_yaw_rate = np.float32(np.clip(
+        next_yaw_rate, -yaw_envelope, yaw_envelope))
     if abs(float(vx)) < low_speed_center:
-        wheelbase = max(float(lf+lr), 1e-3)
         kinematic_yaw_rate = float(next_vx)*np.tan(float(applied_steer))/wheelbase
         yaw_accel = np.clip(
             (kinematic_yaw_rate-float(yaw_rate)) /

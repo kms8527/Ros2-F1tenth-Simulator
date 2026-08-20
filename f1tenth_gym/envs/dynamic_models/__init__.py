@@ -23,6 +23,7 @@ class DynamicModel(Enum):
     KINEMATIC = 5
     KINEMATIC_NOSLIP_NOIMU_DIRECT_SPEED = 6
     DYNAMIC_MLP_RESIDUAL = 7
+    SIMULATOR_GRU = 8
 
     @staticmethod
     def from_string(model: str):
@@ -44,6 +45,8 @@ class DynamicModel(Enum):
         elif model in ("dynamic_mlp_residual", "dynamic_mlp_residual_servo_lag",
                       "dynamic_mlp_residual_servo_lag_vx_delta_24d"):
             return DynamicModel.DYNAMIC_MLP_RESIDUAL
+        elif model == "simulator_gru":
+            return DynamicModel.SIMULATOR_GRU
         else:
             raise ValueError(f"Unknown model type {model}")
 
@@ -65,6 +68,8 @@ class DynamicModel(Enum):
                       DynamicModel.KINEMATIC_NOSLIP_NOIMU_DIRECT_SPEED,
                       DynamicModel.DYNAMIC_MLP_RESIDUAL):
             # [x, y, steering, vx, yaw, yaw_rate, slip_angle, vy]
+            state = np.zeros(8)
+        elif self == DynamicModel.SIMULATOR_GRU:
             state = np.zeros(8)
         else:
             raise ValueError(f"Unknown model type {self}")
@@ -95,6 +100,8 @@ class DynamicModel(Enum):
             raise RuntimeError("KINEMATIC_NOSLIP_NOIMU_DIRECT_SPEED uses its discrete RaceCar update")
         elif self == DynamicModel.DYNAMIC_MLP_RESIDUAL:
             raise RuntimeError("DYNAMIC_MLP_RESIDUAL uses its discrete RaceCar update")
+        elif self == DynamicModel.SIMULATOR_GRU:
+            raise RuntimeError("SIMULATOR_GRU uses its discrete RaceCar update")
         else:
             raise ValueError(f"Unknown model type {self}")
 
@@ -115,6 +122,8 @@ class DynamicModel(Enum):
         elif self in (DynamicModel.KINEMATIC,
                       DynamicModel.KINEMATIC_NOSLIP_NOIMU_DIRECT_SPEED,
                       DynamicModel.DYNAMIC_MLP_RESIDUAL):
+            return get_standardized_state_kinematic
+        elif self == DynamicModel.SIMULATOR_GRU:
             return get_standardized_state_kinematic
         else:
             raise ValueError(f"Unknown model type {self}")
