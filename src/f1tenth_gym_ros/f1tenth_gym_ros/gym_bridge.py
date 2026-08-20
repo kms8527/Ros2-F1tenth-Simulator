@@ -41,10 +41,15 @@ from tf2_ros import TransformBroadcaster
 import gymnasium as gym
 import math
 import numpy as np
+import inspect
 
 import pathlib
 import sys
-sys.path.append('/home/a/f1tenth_gym_ros/src/f1tenth_gym/')
+# Prefer the f1tenth_gym submodule beside this bridge. The launch file also
+# prepends it to PYTHONPATH; this fallback keeps direct `ros2 run` consistent.
+workspace_gym = pathlib.Path(__file__).resolve().parents[3] / 'src' / 'f1tenth_gym'
+if (workspace_gym / 'f1tenth_gym').is_dir():
+    sys.path.insert(0, str(workspace_gym))
 from f1tenth_gym.envs.f110_env import F110Env, Track
 
 import time
@@ -67,6 +72,7 @@ def yaw_from_quaternion(w, x, y, z):
 class GymBridge(Node):
     def __init__(self):
         super().__init__('gym_bridge')
+        self.get_logger().info('f1tenth_gym source: %s' % inspect.getfile(F110Env))
 
         self.declare_parameter('ego_namespace')
         self.declare_parameter('ego_odom_topic')
@@ -101,6 +107,9 @@ class GymBridge(Node):
         self.declare_parameter('dynamic_mlp_weights_path')
         self.declare_parameter('dynamic_mlp_vx_delta_weights_path')
         self.declare_parameter('dynamic_mlp_model_dt')
+        self.declare_parameter('simulator_gru_model_path')
+        self.declare_parameter('simulator_gru_history_steps')
+        self.declare_parameter('simulator_gru_model_dt')
         self.declare_parameter('mppi_dt')
         self.declare_parameter('mppi_min_speed')
         self.declare_parameter('mppi_max_speed')
@@ -121,6 +130,13 @@ class GymBridge(Node):
             self.declare_parameter('dynamic_mlp_' + tire_parameter)
         self.declare_parameter('dynamic_mlp_I_z')
         self.declare_parameter('dynamic_mlp_min_speed')
+        self.declare_parameter('dynamic_mlp_max_residual_yaw_accel')
+        self.declare_parameter('dynamic_mlp_residual_gate_steer_start')
+        self.declare_parameter('dynamic_mlp_residual_gate_steer_end')
+        self.declare_parameter('dynamic_mlp_max_total_yaw_accel')
+        self.declare_parameter('dynamic_mlp_yaw_rate_kinematic_scale')
+        self.declare_parameter('dynamic_mlp_yaw_rate_margin')
+        self.declare_parameter('dynamic_mlp_yaw_rate_lateral_accel_limit')
         self.declare_parameter('mass')
         self.declare_parameter('l_f')
         self.declare_parameter('l_r')
@@ -154,7 +170,8 @@ class GymBridge(Node):
         if dynamics_model in ('kinematic', 'kinematic_mlp',
                               'kinematic_noslip_noimu_direct_speed',
                               'dynamic_mlp_residual_servo_lag',
-                              'dynamic_mlp_residual_servo_lag_vx_delta_24d'):
+                              'dynamic_mlp_residual_servo_lag_vx_delta_24d',
+                              'simulator_gru'):
             self.vehicle_params = dict(self.vehicle_params)
             if dynamics_model == 'kinematic_mlp':
                 self.vehicle_params['mlp_weights_path'] = self.get_parameter('mlp_weights_path').value
@@ -185,9 +202,29 @@ class GymBridge(Node):
                     self.vehicle_params[key] = float(self.get_parameter(key).value)
                 self.vehicle_params['dynamic_mlp_I_z'] = float(self.get_parameter('dynamic_mlp_I_z').value)
                 self.vehicle_params['dynamic_mlp_min_speed'] = float(self.get_parameter('dynamic_mlp_min_speed').value)
+                for limit_parameter in (
+                        'dynamic_mlp_max_residual_yaw_accel',
+                        'dynamic_mlp_residual_gate_steer_start',
+                        'dynamic_mlp_residual_gate_steer_end',
+                        'dynamic_mlp_max_total_yaw_accel',
+                        'dynamic_mlp_yaw_rate_kinematic_scale',
+                        'dynamic_mlp_yaw_rate_margin',
+                        'dynamic_mlp_yaw_rate_lateral_accel_limit'):
+                    self.vehicle_params[limit_parameter] = float(
+                        self.get_parameter(limit_parameter).value)
                 self.vehicle_params['mass'] = float(self.get_parameter('mass').value)
                 self.vehicle_params['lf'] = float(self.get_parameter('l_f').value)
                 self.vehicle_params['lr'] = float(self.get_parameter('l_r').value)
+            elif dynamics_model == 'simulator_gru':
+                self.vehicle_params['simulator_gru_model_path'] = self.get_parameter('simulator_gru_model_path').value
+                self.vehicle_params['simulator_gru_history_steps'] = int(self.get_parameter('simulator_gru_history_steps').value)
+                self.vehicle_params['simulator_gru_model_dt'] = float(self.get_parameter('simulator_gru_model_dt').value)
+                self.vehicle_params['speed_reference_accel_time_constant'] = float(self.get_parameter('speed_reference_accel_time_constant').value)
+                self.vehicle_params['speed_reference_brake_time_constant'] = float(self.get_parameter('speed_reference_brake_time_constant').value)
+                self.vehicle_params['actuator_max_speed_reference_rate'] = float(self.get_parameter('actuator_max_speed_reference_rate').value)
+                self.vehicle_params['steer_servo_time_constant'] = float(self.get_parameter('steer_servo_time_constant').value)
+                self.vehicle_params['actuator_max_steer_rate'] = float(self.get_parameter('actuator_max_steer_rate').value)
+                self.vehicle_params['kinematic_position_speed_scale'] = float(self.get_parameter('kinematic_position_speed_scale').value)
             self.vehicle_params['v_min_mppi'] = float(self.get_parameter('mppi_min_speed').value)
             self.vehicle_params['v_max_mppi'] = float(self.get_parameter('mppi_max_speed').value)
             self.vehicle_params['kinematic_steer_scale'] = float(self.get_parameter('kinematic_steer_scale').value)
@@ -211,7 +248,8 @@ class GymBridge(Node):
         self.direct_speed_model = dynamics_model in (
             'kinematic_noslip_noimu_direct_speed',
             'dynamic_mlp_residual_servo_lag',
-            'dynamic_mlp_residual_servo_lag_vx_delta_24d')
+            'dynamic_mlp_residual_servo_lag_vx_delta_24d',
+            'simulator_gru')
         # env backend
         if self.drive_with_accel and not self.direct_speed_model:
             self.env = gym.make(
@@ -627,10 +665,13 @@ class GymBridge(Node):
         # pub tf
         self._publish_odom(ts)
         self._publish_imu(ts)
-        self._publish_transforms(ts)
-        self._publish_laser_transforms(ts)
-        self._publish_wheel_transforms(ts)
-        ts = self.get_clock().now().to_msg()
+        # Publish one coherent TF snapshot per physics tick. Sending every
+        # link separately produced ~700 TF messages/s and made RViz render
+        # partially updated vehicle trees (visible as flicker).
+        transforms = self._publish_transforms(ts)
+        transforms.extend(self._publish_laser_transforms(ts))
+        transforms.extend(self._publish_wheel_transforms(ts))
+        self.br.sendTransform(transforms)
         # self.get_logger().info(f'Time callback end: {time.time()}')
 
     def _update_sim_state(self):
@@ -724,7 +765,7 @@ class GymBridge(Node):
         ego_ts.header.stamp = ts
         ego_ts.header.frame_id = 'map'
         ego_ts.child_frame_id = self.ego_namespace + '/base_link'
-        self.br.sendTransform(ego_ts)
+        transforms = [ego_ts]
 
         if self.has_opp:
             opp_t = Transform()
@@ -742,7 +783,8 @@ class GymBridge(Node):
             opp_ts.header.stamp = ts
             opp_ts.header.frame_id = 'map'
             opp_ts.child_frame_id = self.opp_namespace + '/base_link'
-            self.br.sendTransform(opp_ts)
+            transforms.append(opp_ts)
+        return transforms
 
     def _publish_wheel_transforms(self, ts):
         ego_wheel_ts = TransformStamped()
@@ -754,10 +796,13 @@ class GymBridge(Node):
         ego_wheel_ts.header.stamp = ts
         ego_wheel_ts.header.frame_id = self.ego_namespace + '/front_left_hinge'
         ego_wheel_ts.child_frame_id = self.ego_namespace + '/front_left_wheel'
-        self.br.sendTransform(ego_wheel_ts)
-        ego_wheel_ts.header.frame_id = self.ego_namespace + '/front_right_hinge'
-        ego_wheel_ts.child_frame_id = self.ego_namespace + '/front_right_wheel'
-        self.br.sendTransform(ego_wheel_ts)
+        transforms = [ego_wheel_ts]
+        ego_right_wheel_ts = TransformStamped()
+        ego_right_wheel_ts.transform.rotation = ego_wheel_ts.transform.rotation
+        ego_right_wheel_ts.header.stamp = ts
+        ego_right_wheel_ts.header.frame_id = self.ego_namespace + '/front_right_hinge'
+        ego_right_wheel_ts.child_frame_id = self.ego_namespace + '/front_right_wheel'
+        transforms.append(ego_right_wheel_ts)
 
         if self.has_opp:
             opp_wheel_ts = TransformStamped()
@@ -769,10 +814,14 @@ class GymBridge(Node):
             opp_wheel_ts.header.stamp = ts
             opp_wheel_ts.header.frame_id = self.opp_namespace + '/front_left_hinge'
             opp_wheel_ts.child_frame_id = self.opp_namespace + '/front_left_wheel'
-            self.br.sendTransform(opp_wheel_ts)
-            opp_wheel_ts.header.frame_id = self.opp_namespace + '/front_right_hinge'
-            opp_wheel_ts.child_frame_id = self.opp_namespace + '/front_right_wheel'
-            self.br.sendTransform(opp_wheel_ts)
+            transforms.append(opp_wheel_ts)
+            opp_right_wheel_ts = TransformStamped()
+            opp_right_wheel_ts.transform.rotation = opp_wheel_ts.transform.rotation
+            opp_right_wheel_ts.header.stamp = ts
+            opp_right_wheel_ts.header.frame_id = self.opp_namespace + '/front_right_hinge'
+            opp_right_wheel_ts.child_frame_id = self.opp_namespace + '/front_right_wheel'
+            transforms.append(opp_right_wheel_ts)
+        return transforms
 
     def _publish_laser_transforms(self, ts):
         ego_scan_ts = TransformStamped()
@@ -782,16 +831,16 @@ class GymBridge(Node):
         ego_scan_ts.header.stamp = ts
         ego_scan_ts.header.frame_id = self.ego_namespace + '/base_link'
         ego_scan_ts.child_frame_id = self.ego_namespace + '/laser'
-        self.br.sendTransform(ego_scan_ts)
+        transforms = [ego_scan_ts]
 
         if self.has_opp:
             opp_scan_ts = TransformStamped()
             opp_scan_ts.transform.translation.x = self.scan_distance_to_base_link
-            opp_scan_ts.transform.rotation.w = 1.
             opp_scan_ts.header.stamp = ts
             opp_scan_ts.header.frame_id = self.opp_namespace + '/base_link'
             opp_scan_ts.child_frame_id = self.opp_namespace + '/laser'
-            self.br.sendTransform(opp_scan_ts)
+            transforms.append(opp_scan_ts)
+        return transforms
 
 def main(args=None):
     rclpy.init(args=args)

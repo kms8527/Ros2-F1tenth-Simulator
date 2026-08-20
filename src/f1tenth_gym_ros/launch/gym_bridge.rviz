@@ -11,6 +11,7 @@ Panels:
         - /MarkerArray1/Namespaces1
         - /MarkerArray6
         - /MarkerArray7
+        - /MarkerArray8
       Splitter Ratio: 0.49896907806396484
     Tree Height: 725
   - Class: rviz_common/Selection
@@ -71,8 +72,8 @@ Visualization Manager:
     - Alpha: 1
       Autocompute Intensity Bounds: true
       Autocompute Value Bounds:
-        Max Value: 3.252042293548584
-        Min Value: -0.5470343232154846
+        Max Value: 3.2497544288635254
+        Min Value: -3.0855987071990967
         Value: true
       Axis: X
       Channel Name: intensity
@@ -184,6 +185,44 @@ Visualization Manager:
         Expand Link Details: false
         Expand Tree: false
         Link Tree Style: Links in Alphabetic Order
+        opp_racecar/back_left_wheel:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        opp_racecar/back_right_wheel:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        opp_racecar/base_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        opp_racecar/front_left_hinge:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        opp_racecar/front_left_wheel:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        opp_racecar/front_right_hinge:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        opp_racecar/front_right_wheel:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        opp_racecar/laser_model:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
       Mass Properties:
         Inertia: false
         Mass: false
@@ -306,15 +345,14 @@ Visualization Manager:
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /opp_traj_pred_viz0
+        Value: /mppi_boundary_viz
       Value: true
     - Class: rviz_default_plugins/MarkerArray
       Enabled: true
       Name: MarkerArray
       Namespaces:
-        best_trajectory: true
-        candidates: true
-        weighted_control_trajectory: true
+        mppi_obstacles: true
+        mppi_optimal_path: true
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -403,4 +441,4 @@ Window Geometry:
     collapsed: true
   Width: 1329
   X: 70
-  Y: 27
+  Y: 109

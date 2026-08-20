@@ -28,14 +28,30 @@ from ament_index_python.packages import get_package_share_directory
 import os
 import yaml
 
+def simulator_paths(package_share):
+    """Resolve the simulator sources belonging to this colcon workspace."""
+    workspace = os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.dirname(package_share))))
+    gym_source = os.path.join(workspace, 'src', 'f1tenth_gym')
+    map_path = os.path.join(
+        workspace, 'src', 'f1tenth_gym_ros', 'maps', 'map1', 'map1')
+    return gym_source, map_path
+
 def generate_launch_description():
     ld = LaunchDescription()
+    package_share = get_package_share_directory('f1tenth_gym_ros')
     config = os.path.join(
-        get_package_share_directory('f1tenth_gym_ros'),
+        package_share,
         'config',
         'sim.yaml'
         )
     config_dict = yaml.safe_load(open(config, 'r'))
+    gym_source, local_map_path = simulator_paths(package_share)
+    if not os.path.isdir(os.path.join(gym_source, 'f1tenth_gym')):
+        raise RuntimeError('Pinned f1tenth_gym source is missing: ' + gym_source)
+    if not os.path.isfile(local_map_path + '.yaml'):
+        raise RuntimeError('Simulator map is missing: ' + local_map_path + '.yaml')
+    config_dict['bridge']['ros__parameters']['map_path'] = local_map_path
     has_opp = config_dict['bridge']['ros__parameters']['num_agent'] > 1
     teleop = config_dict['bridge']['ros__parameters']['kb_teleop']
     use_sim_time = config_dict['bridge']['ros__parameters']['use_sim_time']
@@ -52,10 +68,15 @@ def generate_launch_description():
         package='f1tenth_gym_ros',
         executable='gym_bridge',
         name='bridge',
-        parameters=[config, obstacle_override, {
+        parameters=[config, {'map_path': local_map_path}, obstacle_override, {
             'use_sim_time': False,  # Always use real time for the bridge node
             'use_sim_time_bridge': use_sim_time, # Whether to internally use and publish sim time
             }],
+        additional_env={
+            'PYTHONPATH': gym_source + os.pathsep + os.environ.get('PYTHONPATH', ''),
+            'NUMBA_CACHE_DIR': os.environ.get(
+                'NUMBA_CACHE_DIR', '/tmp/f1tenth_numba_cache'),
+        },
     )
     rviz_node = Node(
         package='rviz2',
