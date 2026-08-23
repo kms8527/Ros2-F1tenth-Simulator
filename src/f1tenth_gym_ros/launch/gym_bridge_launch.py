@@ -113,6 +113,7 @@ def generate_launch_description():
     # Keep simulator plant parameters sourced from the same params.yaml as
     # MPPI; sim.yaml no longer carries an independently drifting copy.
     shared_names = (
+        'max_steer',
         'kinematic_steer_scale', 'kinematic_steer_bias',
         'steer_servo_time_constant', 'actuator_max_steer_rate',
         'speed_servo_kp', 'speed_reference_accel_time_constant',
