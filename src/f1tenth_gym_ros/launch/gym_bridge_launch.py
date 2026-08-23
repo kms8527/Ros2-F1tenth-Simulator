@@ -22,9 +22,13 @@
 
 from launch import LaunchDescription
 from launch.actions import TimerAction
+from launch.conditions import IfCondition
 from launch_ros.actions import Node
 from launch.substitutions import Command
+from launch.substitutions import EnvironmentVariable
 from ament_index_python.packages import get_package_share_directory
+import csv
+import math
 import os
 import yaml
 
@@ -33,9 +37,64 @@ def simulator_paths(package_share):
     workspace = os.path.dirname(os.path.dirname(os.path.dirname(
         os.path.dirname(package_share))))
     gym_source = os.path.join(workspace, 'src', 'f1tenth_gym')
-    map_path = os.path.join(
-        workspace, 'src', 'f1tenth_gym_ros', 'maps', 'map1', 'map1')
+    project_root = os.path.dirname(workspace)
+    map_path = os.environ.get('F1TENTH_SIM_MAP_PATH', os.path.join(
+        project_root, 'data', 'map2', 'map2'))
     return gym_source, map_path
+
+
+def centerline_spawn_poses(map_path):
+    """Return ego/opponent poses aligned with the selected map centerline."""
+    base = os.path.basename(map_path)
+    directory = os.path.dirname(map_path)
+    candidates = (
+        os.path.join(directory, base + '_mppi_track_optimal.csv'),
+        os.path.join(directory, base + '_mppi_track.csv'),
+        os.path.join(directory, base + '_centerline.csv'),
+        os.path.join(directory, 'centerline_equal.csv'),
+        os.path.join(directory, 'centerline.csv'),
+    )
+    centerline_path = next((path for path in candidates if os.path.isfile(path)), None)
+    if centerline_path is None:
+        raise RuntimeError('No centerline CSV found for simulator map: ' + map_path)
+
+    points = []
+    with open(centerline_path, newline='') as stream:
+        rows = list(csv.reader(stream))
+    start = 1 if rows and rows[0] and rows[0][0].strip().lower() in ('x', 'x_m') else 0
+    for row in rows[start:]:
+        if len(row) >= 2:
+            points.append((float(row[0]), float(row[1])))
+    if len(points) < 2:
+        raise RuntimeError('Centerline needs at least two points: ' + centerline_path)
+
+    def pose(index):
+        x, y = points[index]
+        next_x, next_y = points[(index + 1) % len(points)]
+        return x, y, math.atan2(next_y - y, next_x - x)
+
+    # CSV sampling density is not fixed: on map2, 30 samples are only about
+    # 0.30 m and overlap the two vehicle footprints. Select the opponent by
+    # physical arc length instead of a sample count.
+    requested_separation = float(os.environ.get(
+        'F1TENTH_OPPONENT_SPAWN_DISTANCE_M', '2.5'))
+    if requested_separation <= 0.0:
+        raise ValueError('F1TENTH_OPPONENT_SPAWN_DISTANCE_M must be positive')
+    opponent_index = 1
+    arc_length = 0.0
+    maximum_index = max(1, len(points) // 2)
+    while opponent_index <= maximum_index:
+        arc_length += math.dist(points[opponent_index - 1],
+                                points[opponent_index])
+        if arc_length >= requested_separation:
+            break
+        opponent_index += 1
+    if arc_length < requested_separation:
+        raise RuntimeError(
+            'Centerline is too short for requested opponent separation: '
+            f'{requested_separation:.3f} m (available {arc_length:.3f} m)')
+    return (pose(0), pose(opponent_index), centerline_path,
+            opponent_index, arc_length)
 
 def generate_launch_description():
     ld = LaunchDescription()
@@ -45,30 +104,90 @@ def generate_launch_description():
         'config',
         'sim.yaml'
         )
+    controller_config = os.path.join(
+        get_package_share_directory('smppi_cuda_controller'),
+        'config',
+        'params.yaml')
+    controller_parameters = yaml.safe_load(open(controller_config, 'r'))[
+        '/**']['ros__parameters']
+    # Keep simulator plant parameters sourced from the same params.yaml as
+    # MPPI; sim.yaml no longer carries an independently drifting copy.
+    shared_names = (
+        'kinematic_steer_scale', 'kinematic_steer_bias',
+        'steer_servo_time_constant', 'actuator_max_steer_rate',
+        'speed_servo_kp', 'speed_reference_accel_time_constant',
+        'speed_reference_brake_time_constant',
+        'actuator_max_speed_reference_rate', 'kinematic_position_speed_scale',
+        'dynamic_mlp_B_f', 'dynamic_mlp_C_f', 'dynamic_mlp_D_f',
+        'dynamic_mlp_E_f', 'dynamic_mlp_B_r', 'dynamic_mlp_C_r',
+        'dynamic_mlp_D_r', 'dynamic_mlp_E_r', 'dynamic_mlp_I_z',
+        'mlp_max_residual_ax', 'mlp_max_residual_ay',
+        'mlp_max_residual_yaw_accel', 'mass', 'l_f', 'l_r')
+    controller_override = {
+        name: controller_parameters[name] for name in shared_names}
+    controller_override.update({
+        'dynamics_model': controller_parameters['dynamics_model'],
+        'mppi_min_speed': controller_parameters['min_speed'],
+        'mppi_max_speed': controller_parameters['max_speed'],
+        'mppi_min_accel': controller_parameters['min_accel'],
+        'mppi_max_accel': controller_parameters['max_accel'],
+        'dynamic_mlp_model_dt': controller_parameters['model_dt'],
+    })
     config_dict = yaml.safe_load(open(config, 'r'))
+    requested_num_agents = int(os.environ.get(
+        'F1TENTH_SIM_NUM_AGENTS',
+        config_dict['bridge']['ros__parameters']['num_agent']))
+    if requested_num_agents not in (1, 2):
+        raise ValueError('F1TENTH_SIM_NUM_AGENTS must be 1 or 2')
+    config_dict['bridge']['ros__parameters']['num_agent'] = requested_num_agents
     gym_source, local_map_path = simulator_paths(package_share)
     if not os.path.isdir(os.path.join(gym_source, 'f1tenth_gym')):
         raise RuntimeError('Pinned f1tenth_gym source is missing: ' + gym_source)
     if not os.path.isfile(local_map_path + '.yaml'):
         raise RuntimeError('Simulator map is missing: ' + local_map_path + '.yaml')
     config_dict['bridge']['ros__parameters']['map_path'] = local_map_path
-    has_opp = config_dict['bridge']['ros__parameters']['num_agent'] > 1
+    (ego_spawn, opponent_spawn, centerline_path, opponent_spawn_index,
+     opponent_spawn_distance) = centerline_spawn_poses(local_map_path)
+    simulator_dynamics = os.environ.get('F1TENTH_SIM_DYNAMICS_MODEL')
+    simulator_override = {}
+    if simulator_dynamics:
+        simulator_override['dynamics_model'] = simulator_dynamics
+    has_opp = requested_num_agents > 1
     teleop = config_dict['bridge']['ros__parameters']['kb_teleop']
     use_sim_time = config_dict['bridge']['ros__parameters']['use_sim_time']
-    obstacle_override = {}
+    obstacle_override = dict(zip(('sx1', 'sy1', 'stheta1'), opponent_spawn))
     for environment_name, parameter_name in (
-        ('F1TENTH_OBSTACLE_X', 'sx1'),
-        ('F1TENTH_OBSTACLE_Y', 'sy1'),
-        ('F1TENTH_OBSTACLE_YAW', 'stheta1')):
+            ('F1TENTH_OBSTACLE_X', 'sx1'),
+            ('F1TENTH_OBSTACLE_Y', 'sy1'),
+            ('F1TENTH_OBSTACLE_YAW', 'stheta1')):
         value = os.environ.get(environment_name)
         if value is not None:
             obstacle_override[parameter_name] = float(value)
+    ego_override = dict(zip(('sx', 'sy', 'stheta'), ego_spawn))
+    for environment_name, parameter_name in (
+        ('F1TENTH_EGO_X', 'sx'), ('F1TENTH_EGO_Y', 'sy'),
+        ('F1TENTH_EGO_YAW', 'stheta')):
+        value = os.environ.get(environment_name)
+        if value is not None:
+            ego_override[parameter_name] = float(value)
+    ego_override['initial_speed'] = float(os.environ.get(
+        'F1TENTH_EGO_INITIAL_SPEED', '0.0'))
+
+    print('Simulator centerline spawn: ' + centerline_path)
+    print('  ego: x={sx:.6f}, y={sy:.6f}, yaw={stheta:.6f}'.format(**ego_override))
+    print('  opponent: x={sx1:.6f}, y={sy1:.6f}, yaw={stheta1:.6f} '
+          '(centerline index {}, arc distance {:.3f} m)'.format(
+              opponent_spawn_index, opponent_spawn_distance,
+              **obstacle_override))
 
     bridge_node = Node(
         package='f1tenth_gym_ros',
         executable='gym_bridge',
         name='bridge',
-        parameters=[config, {'map_path': local_map_path}, obstacle_override, {
+        parameters=[config, controller_override, {
+                    'map_path': local_map_path,
+                    'num_agent': requested_num_agents}, simulator_override,
+                    obstacle_override, ego_override, {
             'use_sim_time': False,  # Always use real time for the bridge node
             'use_sim_time_bridge': use_sim_time, # Whether to internally use and publish sim time
             }],
@@ -84,6 +203,8 @@ def generate_launch_description():
         name='rviz',
         arguments=['-d', os.path.join(get_package_share_directory('f1tenth_gym_ros'), 'launch', 'gym_bridge.rviz')],
         parameters=[{'use_sim_time': use_sim_time}],
+        condition=IfCondition(EnvironmentVariable(
+            'F1TENTH_SIM_ENABLE_RVIZ', default_value='true')),
     )
 
     # Create custom yaml file for map server by copying the original yaml file and scaling the resolution by the sim.yaml scale

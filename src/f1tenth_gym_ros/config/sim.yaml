@@ -45,8 +45,7 @@ bridge:
 
     # map parameters
     # Austin  berlin  levinelobby_track  porto  icra2025  iccas2024  iv2024
-    # map_path: '/home/a/f1tenth_gym_ros/src/f1tenth_gym_ros/maps/map1/map1'
-    map_path: '/home/a/f1tenth_gym_ros/src/f1tenth_gym_ros/maps/map1/map1'
+    map_path: '/home/a/smooth-mppi-cuda/data/map2/map2'
     map_img_ext: '.pgm'
 
     # car parameters and scale
@@ -55,7 +54,8 @@ bridge:
     scale: 1.0
     # Must match smooth-mppi-cuda/config/params.yaml.
     # Same adaptive-KF-compatible 20-D residual plant as CUDA MPPI.
-    dynamics_model: simulator_gru
+    # Exact non-MLP Pacejka + actuator-lag plant used by CUDA MPPI.
+    dynamics_model: DYNAMIC_SERVO_LAG
     kinematic_noslip_noimu_weights_path: /home/a/smooth-mppi-cuda/config/ifac0807_strict_noslip_noimu_16d.bin
     lateral_velocity_kf_enabled: false
     # Used only when dynamics_model is kinematic_mlp.
@@ -94,14 +94,6 @@ bridge:
     dynamic_mlp_D_r: 3.1890651732250443
     dynamic_mlp_E_r: -0.9999999999999999
     dynamic_mlp_I_z: 0.04712
-    dynamic_mlp_min_speed: 0.8
-    dynamic_mlp_max_residual_yaw_accel: 12.0
-    dynamic_mlp_residual_gate_steer_start: 0.40
-    dynamic_mlp_residual_gate_steer_end: 0.4788
-    dynamic_mlp_max_total_yaw_accel: 12.0
-    dynamic_mlp_yaw_rate_kinematic_scale: 0.75
-    dynamic_mlp_yaw_rate_margin: 0.35
-    dynamic_mlp_yaw_rate_lateral_accel_limit: 9.5
     mass: 3.74
     l_f: 0.163
     l_r: 0.161
@@ -115,19 +107,19 @@ bridge:
     # origin placed the car immediately before a tightening bend and made the
     # first uninformed MPPI population prone to selecting an off-map path.
     # Keep normal racing speed; only move the deterministic spawn.
-    sx: -1.796
-    sy: -5.478
-    stheta: 1.541
+    sx: 5.73275632738849
+    sy: -2.7164015483210995
+    stheta: 2.0396268447710835
 
     # opp starting pose on map
     # Stationary obstacle on a wide Map1 section.  With no
     # /opp_drive publisher gym_bridge holds this car at zero speed.
     # Placed on the obstacle-free MPPI racing line measured in the baseline
     # run; maintaining that line now causes a physical collision.
-    sx1: 2.38
-    sy1: -3.48
-    stheta1: -2.02
-    static_opponent: true
+    sx1: 4.4478704550662265
+    sy1: -3.483583072215551
+    stheta1: 2.1524574871591735
+    static_opponent: false
 
     # teleop
     # /drive만 제어입력으로 사용해 의도치 않은 /cmd_vel 개입을 막는다.

@@ -93,6 +93,7 @@ class GymBridge(Node):
         self.declare_parameter('sx')
         self.declare_parameter('sy')
         self.declare_parameter('stheta')
+        self.declare_parameter('initial_speed', 0.0)
         self.declare_parameter('sx1')
         self.declare_parameter('sy1')
         self.declare_parameter('stheta1')
@@ -129,14 +130,9 @@ class GymBridge(Node):
                                'B_r', 'C_r', 'D_r', 'E_r'):
             self.declare_parameter('dynamic_mlp_' + tire_parameter)
         self.declare_parameter('dynamic_mlp_I_z')
-        self.declare_parameter('dynamic_mlp_min_speed')
-        self.declare_parameter('dynamic_mlp_max_residual_yaw_accel')
-        self.declare_parameter('dynamic_mlp_residual_gate_steer_start')
-        self.declare_parameter('dynamic_mlp_residual_gate_steer_end')
-        self.declare_parameter('dynamic_mlp_max_total_yaw_accel')
-        self.declare_parameter('dynamic_mlp_yaw_rate_kinematic_scale')
-        self.declare_parameter('dynamic_mlp_yaw_rate_margin')
-        self.declare_parameter('dynamic_mlp_yaw_rate_lateral_accel_limit')
+        self.declare_parameter('mlp_max_residual_ax', 0.0)
+        self.declare_parameter('mlp_max_residual_ay', 8.0)
+        self.declare_parameter('mlp_max_residual_yaw_accel', 12.0)
         self.declare_parameter('mass')
         self.declare_parameter('l_f')
         self.declare_parameter('l_r')
@@ -171,6 +167,7 @@ class GymBridge(Node):
                               'kinematic_noslip_noimu_direct_speed',
                               'dynamic_mlp_residual_servo_lag',
                               'dynamic_mlp_residual_servo_lag_vx_delta_24d',
+                              'dynamic_servo_lag', 'DYNAMIC_SERVO_LAG',
                               'simulator_gru'):
             self.vehicle_params = dict(self.vehicle_params)
             if dynamics_model == 'kinematic_mlp':
@@ -181,11 +178,13 @@ class GymBridge(Node):
                 self.vehicle_params['min_accel_mppi'] = float(self.get_parameter('mppi_min_accel').value)
                 self.vehicle_params['max_accel_mppi'] = float(self.get_parameter('mppi_max_accel').value)
             elif dynamics_model in ('dynamic_mlp_residual_servo_lag',
-                                     'dynamic_mlp_residual_servo_lag_vx_delta_24d'):
-                weight_parameter = ('dynamic_mlp_vx_delta_weights_path'
-                    if dynamics_model.endswith('vx_delta_24d')
-                    else 'dynamic_mlp_weights_path')
-                self.vehicle_params['dynamic_mlp_weights_path'] = self.get_parameter(weight_parameter).value
+                                     'dynamic_mlp_residual_servo_lag_vx_delta_24d',
+                                     'dynamic_servo_lag', 'DYNAMIC_SERVO_LAG'):
+                if dynamics_model not in ('dynamic_servo_lag', 'DYNAMIC_SERVO_LAG'):
+                    weight_parameter = ('dynamic_mlp_vx_delta_weights_path'
+                        if dynamics_model.endswith('vx_delta_24d')
+                        else 'dynamic_mlp_weights_path')
+                    self.vehicle_params['dynamic_mlp_weights_path'] = self.get_parameter(weight_parameter).value
                 self.vehicle_params['dynamic_mlp_model_dt'] = float(self.get_parameter('dynamic_mlp_model_dt').value)
                 self.vehicle_params['speed_servo_kp'] = float(self.get_parameter('speed_servo_kp').value)
                 self.vehicle_params['min_accel_mppi'] = float(self.get_parameter('mppi_min_accel').value)
@@ -201,15 +200,9 @@ class GymBridge(Node):
                     key = 'dynamic_mlp_' + tire_parameter
                     self.vehicle_params[key] = float(self.get_parameter(key).value)
                 self.vehicle_params['dynamic_mlp_I_z'] = float(self.get_parameter('dynamic_mlp_I_z').value)
-                self.vehicle_params['dynamic_mlp_min_speed'] = float(self.get_parameter('dynamic_mlp_min_speed').value)
                 for limit_parameter in (
-                        'dynamic_mlp_max_residual_yaw_accel',
-                        'dynamic_mlp_residual_gate_steer_start',
-                        'dynamic_mlp_residual_gate_steer_end',
-                        'dynamic_mlp_max_total_yaw_accel',
-                        'dynamic_mlp_yaw_rate_kinematic_scale',
-                        'dynamic_mlp_yaw_rate_margin',
-                        'dynamic_mlp_yaw_rate_lateral_accel_limit'):
+                        'mlp_max_residual_ax', 'mlp_max_residual_ay',
+                        'mlp_max_residual_yaw_accel'):
                     self.vehicle_params[limit_parameter] = float(
                         self.get_parameter(limit_parameter).value)
                 self.vehicle_params['mass'] = float(self.get_parameter('mass').value)
@@ -243,13 +236,31 @@ class GymBridge(Node):
         path = pathlib.Path(path)
         loaded_map = Track.from_track_path(path, scale)
         self.loaded_map = loaded_map
+        self._load_respawn_centerline(path.parent, name)
 
         self.drive_with_accel = self.get_parameter('drive_with_accel').value
         self.direct_speed_model = dynamics_model in (
             'kinematic_noslip_noimu_direct_speed',
             'dynamic_mlp_residual_servo_lag',
             'dynamic_mlp_residual_servo_lag_vx_delta_24d',
+            'dynamic_servo_lag', 'DYNAMIC_SERVO_LAG',
             'simulator_gru')
+        self.get_logger().info(
+            'Simulator dynamics: %s, dt=%.3f s, model_dt=%.3f s, '
+            'direct speed-command input=%s' % (
+                dynamics_model, sim_timestep,
+                float(self.vehicle_params.get('dynamic_mlp_model_dt', sim_timestep)),
+                self.direct_speed_model))
+        if dynamics_model in ('dynamic_servo_lag', 'DYNAMIC_SERVO_LAG'):
+            self.get_logger().info(
+                'DYNAMIC_SERVO_LAG parameters sourced from MPPI params.yaml: '
+                'm=%.4f, lf=%.4f, lr=%.4f, Iz=%.6f, steer_tau=%.6f, '
+                'speed_tau=(%.6f, %.6f)' % (
+                    self.vehicle_params['mass'], self.vehicle_params['lf'],
+                    self.vehicle_params['lr'], self.vehicle_params['dynamic_mlp_I_z'],
+                    self.vehicle_params['steer_servo_time_constant'],
+                    self.vehicle_params['speed_reference_accel_time_constant'],
+                    self.vehicle_params['speed_reference_brake_time_constant']))
         # env backend
         if self.drive_with_accel and not self.direct_speed_model:
             self.env = gym.make(
@@ -367,6 +378,18 @@ class GymBridge(Node):
             self.obs, _ = self.env.reset(options={"poses": np.array([[sx, sy, stheta]])})
             self.ego_scan = list(self.obs['scans'][0])
 
+        initial_speed = float(self.get_parameter('initial_speed').value)
+        if initial_speed < 0.0 or initial_speed > self.vehicle_params['v_max_mppi']:
+            raise ValueError(
+                f'initial_speed={initial_speed} is outside simulator range '
+                f'[0, {self.vehicle_params["v_max_mppi"]}]')
+        ego_agent = self.env.unwrapped.sim.agents[0]
+        ego_agent.state[3] = initial_speed
+        ego_agent.mlp_speed_reference = np.float32(initial_speed)
+        self.obs['linear_vels_x'][0] = initial_speed
+        self.ego_speed[0] = initial_speed
+        self.get_logger().info(f'Simulator ego initial speed: {initial_speed:.3f} m/s')
+
         # sim physical step timer
         self.drive_timer = self.create_timer(sim_timestep, self.drive_timer_callback)
         # Odom/TF are published by drive_timer_callback immediately after the
@@ -386,6 +409,7 @@ class GymBridge(Node):
             self.opp_scan_pub = self.create_publisher(LaserScan, opp_scan_topic, 1)
             self.ego_opp_odom_pub = self.create_publisher(Odometry, ego_opp_odom_topic, 1)
             self.opp_odom_pub = self.create_publisher(Odometry, opp_odom_topic, 1)
+            self.opp_imu_pub = self.create_publisher(Imu, '/opp_imu/data', 10)
             self.opp_ego_odom_pub = self.create_publisher(Odometry, opp_ego_odom_topic, 1)
             self.opp_drive_published = False
 
@@ -441,15 +465,65 @@ class GymBridge(Node):
             self.pause_callback,
             10)
 
+    def _load_respawn_centerline(self, map_directory, map_name):
+        """Load the same ordered centerline used by MPPI and derive yaw."""
+        candidates = (
+            map_directory / f'{map_name}_mppi_track_optimal.csv',
+            map_directory / f'{map_name}_mppi_track.csv',
+            map_directory / f'{map_name}_centerline.csv',
+            map_directory / 'centerline_equal.csv',
+            map_directory / 'centerline.csv',
+        )
+        centerline_path = next((p for p in candidates if p.is_file()), None)
+        if centerline_path is None:
+            raise RuntimeError(
+                f'Simulator respawn centerline not found in {map_directory}')
+        table = np.genfromtxt(centerline_path, delimiter=',', names=True,
+                              dtype=np.float64, encoding='utf-8-sig')
+        names = table.dtype.names or ()
+        x_name = 'x_m' if 'x_m' in names else ('x' if 'x' in names else None)
+        y_name = 'y_m' if 'y_m' in names else ('y' if 'y' in names else None)
+        if x_name is None or y_name is None:
+            raise RuntimeError(
+                f'Respawn centerline requires x_m/y_m columns: {centerline_path}')
+        self.respawn_centerline_x = np.atleast_1d(table[x_name]).astype(float)
+        self.respawn_centerline_y = np.atleast_1d(table[y_name]).astype(float)
+        if self.respawn_centerline_x.size < 3:
+            raise RuntimeError(
+                f'Respawn centerline needs at least 3 points: {centerline_path}')
+        # Compute yaw from geometry. Never trust a stored wrapped/offset yaw
+        # column for respawn orientation.
+        next_x = np.roll(self.respawn_centerline_x, -1)
+        next_y = np.roll(self.respawn_centerline_y, -1)
+        prev_x = np.roll(self.respawn_centerline_x, 1)
+        prev_y = np.roll(self.respawn_centerline_y, 1)
+        self.respawn_centerline_yaw = np.arctan2(
+            next_y - prev_y, next_x - prev_x)
+        self.get_logger().info(
+            f'Respawn alignment centerline: {centerline_path} '
+            f'({self.respawn_centerline_x.size} points)')
+
+    def _nearest_respawn_index(self, x, y):
+        distance_squared = ((self.respawn_centerline_x - x) ** 2
+                            + (self.respawn_centerline_y - y) ** 2)
+        return int(np.argmin(distance_squared))
+
+    def _centerline_aligned_yaw(self, x, y):
+        index = self._nearest_respawn_index(x, y)
+        return float(self.respawn_centerline_yaw[index]), index
+
     def select_init_poses(self):
-        random_idx = np.random.randint(0, len(self.loaded_map.centerline.xs))
-        poses = np.zeros((2, 3))
-        poses[0, 0] = self.loaded_map.centerline.xs[random_idx]
-        poses[0, 1] = self.loaded_map.centerline.ys[random_idx]
-        poses[0, 2] = self.loaded_map.centerline.yaws[random_idx]
-        poses[1, 0] = self.loaded_map.centerline.xs[(random_idx + len(self.loaded_map.centerline.xs)//2) % len(self.loaded_map.centerline.xs)]
-        poses[1, 1] = self.loaded_map.centerline.ys[(random_idx + len(self.loaded_map.centerline.xs)//2) % len(self.loaded_map.centerline.xs)]
-        poses[1, 2] = self.loaded_map.centerline.yaws[(random_idx + len(self.loaded_map.centerline.xs)//2) % len(self.loaded_map.centerline.xs)]
+        random_idx = np.random.randint(0, len(self.respawn_centerline_x))
+        poses = np.zeros((2 if self.has_opp else 1, 3))
+        poses[0, 0] = self.respawn_centerline_x[random_idx]
+        poses[0, 1] = self.respawn_centerline_y[random_idx]
+        poses[0, 2] = self.respawn_centerline_yaw[random_idx]
+        if self.has_opp:
+            opponent_idx = ((random_idx + len(self.respawn_centerline_x)//2)
+                            % len(self.respawn_centerline_x))
+            poses[1, 0] = self.respawn_centerline_x[opponent_idx]
+            poses[1, 1] = self.respawn_centerline_y[opponent_idx]
+            poses[1, 2] = self.respawn_centerline_yaw[opponent_idx]
 
         return poses
     def pause_callback(self, msg):
@@ -485,7 +559,8 @@ class GymBridge(Node):
         rqy = pose_msg.pose.pose.orientation.y
         rqz = pose_msg.pose.pose.orientation.z
         rqw = pose_msg.pose.pose.orientation.w
-        rtheta = yaw_from_quaternion(rqw, rqx, rqy, rqz)
+        requested_yaw = yaw_from_quaternion(rqw, rqx, rqy, rqz)
+        rtheta, centerline_index = self._centerline_aligned_yaw(rx, ry)
         if self.has_opp:
             opp_pose = [self.obs['poses_x'][1], self.obs['poses_y'][1], self.obs['poses_theta'][1]]
             self.obs, _ = self.env.reset(options={"poses": np.array([[rx, ry, rtheta], opp_pose])})
@@ -493,6 +568,10 @@ class GymBridge(Node):
             self.obs, _ = self.env.reset(options={"poses": np.array([[rx, ry, rtheta]])})
 
         self.ego_drive_published = False
+        self.get_logger().info(
+            f'Respawned ego at x={rx:.3f}, y={ry:.3f}, '
+            f'centerline yaw={rtheta:.3f} (requested {requested_yaw:.3f}, '
+            f'index {centerline_index})')
 
     def opp_reset_callback(self, pose_msg):
         if self.sim_paused:
@@ -505,7 +584,8 @@ class GymBridge(Node):
             rqy = pose_msg.pose.orientation.y
             rqz = pose_msg.pose.orientation.z
             rqw = pose_msg.pose.orientation.w
-            rtheta = yaw_from_quaternion(rqw, rqx, rqy, rqz)
+            requested_yaw = yaw_from_quaternion(rqw, rqx, rqy, rqz)
+            rtheta, centerline_index = self._centerline_aligned_yaw(rx, ry)
             new_opponent_pose = np.array([rx, ry, rtheta], dtype=float)
 
             # RViz's 2D Goal Pose moves only the opponent. Resetting the whole
@@ -528,7 +608,8 @@ class GymBridge(Node):
             self._update_sim_state()
             self.get_logger().info(
                 f'Moved opponent with /goal_pose to x={rx:.3f}, '
-                f'y={ry:.3f}, yaw={rtheta:.3f}')
+                f'y={ry:.3f}, centerline yaw={rtheta:.3f} '
+                f'(requested {requested_yaw:.3f}, index {centerline_index})')
 
         self.opp_drive_published = False
 
@@ -555,24 +636,34 @@ class GymBridge(Node):
         if self.sim_paused:
             return  # Skip stepping the sim if paused
 
+        # In a two-agent simulation either controller may be run by itself.
+        # Advance the simulator when either command has arrived; the vehicle
+        # without a publisher receives an explicit stationary command.
+        should_step = self.ego_drive_published or (
+            self.has_opp and self.opp_drive_published)
+
         if self.drive_with_accel and not self.direct_speed_model:
             if self.ego_drive_published and not self.has_opp:
                 self.obs, _, self.done, _, _ = self.env.step(np.array([[self.ego_steer, self.ego_requested_accel]]))
-            elif self.ego_drive_published and self.has_opp:
+            elif should_step and self.has_opp:
                 # A second simulated car can be used as a stationary obstacle.
                 # If no opponent controller is publishing, keep it stopped
                 # instead of freezing the entire simulation while waiting for
                 # /opp_drive.
                 opp_steer = self.opp_steer if self.opp_drive_published else 0.0
                 opp_accel = self.opp_requested_accel if self.opp_drive_published else 0.0
-                self.obs, _, self.done, _, _ = self.env.step(np.array([[self.ego_steer, self.ego_requested_accel], [opp_steer, opp_accel]]))
+                ego_steer = self.ego_steer if self.ego_drive_published else 0.0
+                ego_accel = self.ego_requested_accel if self.ego_drive_published else 0.0
+                self.obs, _, self.done, _, _ = self.env.step(np.array([[ego_steer, ego_accel], [opp_steer, opp_accel]]))
         else:
             if self.ego_drive_published and not self.has_opp:
                 self.obs, _, self.done, _, _ = self.env.step(np.array([[self.ego_steer, self.ego_requested_speed]]))
-            elif self.ego_drive_published and self.has_opp:
+            elif should_step and self.has_opp:
                 opp_steer = self.opp_steer if self.opp_drive_published else 0.0
                 opp_speed = self.opp_requested_speed if self.opp_drive_published else 0.0
-                self.obs, _, self.done, _, _ = self.env.step(np.array([[self.ego_steer, self.ego_requested_speed], [opp_steer, opp_speed]]))
+                ego_steer = self.ego_steer if self.ego_drive_published else 0.0
+                ego_speed = self.ego_requested_speed if self.ego_drive_published else 0.0
+                self.obs, _, self.done, _, _ = self.env.step(np.array([[ego_steer, ego_speed], [opp_steer, opp_speed]]))
 
         if self.has_opp and self.static_opponent:
             # The learned vehicle dynamics can drift even for a zero speed
@@ -601,7 +692,16 @@ class GymBridge(Node):
             if(self.env.collisions.any() == True and not is_close_each_agents or curr_time > 35):
                 poses = self.select_init_poses()
                 options = {"poses": poses}
-                self.env.reset(options=options)
+                self.obs, _ = self.env.reset(options=options)
+                self.ego_drive_published = False
+                self.ego_requested_speed = 0.0
+                self.ego_requested_accel = 0.0
+                self.ego_steer = 0.0
+                if self.has_opp:
+                    self.opp_drive_published = False
+                self._update_sim_state()
+                self.get_logger().info(
+                    'Respawned vehicles on the selected map centerline')
                 self.start_time = time.time()
             
         if self.get_parameter('use_sim_time_bridge').value:
@@ -748,6 +848,19 @@ class GymBridge(Node):
         imu.linear_acceleration.y = float(ay)
         imu.linear_acceleration.z = 9.81
         self.ego_imu_pub.publish(imu)
+        if self.has_opp:
+            opp_imu = Imu()
+            opp_imu.header.stamp = ts
+            opp_imu.header.frame_id = self.opp_namespace + '/base_link'
+            opp_imu.orientation.w = 1.0
+            opp_agent = self.env.unwrapped.sim.agents[1]
+            opp_wz, opp_ax, opp_ay = np.asarray(
+                opp_agent.mlp_imu, dtype=np.float32)
+            opp_imu.angular_velocity.z = float(opp_wz)
+            opp_imu.linear_acceleration.x = float(opp_ax)
+            opp_imu.linear_acceleration.y = float(opp_ay)
+            opp_imu.linear_acceleration.z = 9.81
+            self.opp_imu_pub.publish(opp_imu)
 
     def _publish_transforms(self, ts):
         ego_t = Transform()

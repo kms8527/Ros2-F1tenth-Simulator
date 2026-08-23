@@ -12,6 +12,8 @@ Panels:
         - /MarkerArray6
         - /MarkerArray7
         - /MarkerArray8
+        - /MarkerArray9
+        - /MarkerArray9/Namespaces1
       Splitter Ratio: 0.49896907806396484
     Tree Height: 725
   - Class: rviz_common/Selection
@@ -72,8 +74,8 @@ Visualization Manager:
     - Alpha: 1
       Autocompute Intensity Bounds: true
       Autocompute Value Bounds:
-        Max Value: 3.2497544288635254
-        Min Value: -3.0855987071990967
+        Max Value: 4.817899703979492
+        Min Value: 0.8317293524742126
         Value: true
       Axis: X
       Channel Name: intensity
@@ -339,7 +341,7 @@ Visualization Manager:
       Enabled: true
       Name: MarkerArray
       Namespaces:
-        {}
+        boundary_slack_zero: true
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -351,7 +353,7 @@ Visualization Manager:
       Enabled: true
       Name: MarkerArray
       Namespaces:
-        mppi_obstacles: true
+        mppi_dynamic_obstacles: true
         mppi_optimal_path: true
       Topic:
         Depth: 5
@@ -359,6 +361,30 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /mppi_viz
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: MarkerArray
+      Namespaces:
+        mppi_optimal_path: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /mppi2/viz
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: MarkerArray
+      Namespaces:
+        mdn_prediction_1: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /mppi/dynamic_obstacle_prediction_markers
       Value: true
   Enabled: true
   Global Options:
@@ -413,9 +439,9 @@ Visualization Manager:
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: -0.139314666390419
-        Y: -4.6657233238220215
-        Z: 1.4695833921432495
+        X: 4.1618571281433105
+        Y: -0.552960216999054
+        Z: 1.4738637208938599
       Focal Shape Fixed Size: false
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
@@ -441,4 +467,4 @@ Window Geometry:
     collapsed: true
   Width: 1329
   X: 70
-  Y: 109
+  Y: 27
