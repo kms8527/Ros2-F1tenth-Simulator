@@ -96,6 +96,11 @@ class Track:
         """
         with open(filespec, "r") as yaml_stream:
             map_metadata = yaml.safe_load(yaml_stream)
+            # ROS map_server accepts the optional ``mode`` key (for example
+            # ``mode: trinary``), while TrackSpec only contains the geometric
+            # map fields.  Ignore map_server-only metadata instead of rejecting
+            # otherwise valid ROS map YAML files.
+            map_metadata.pop("mode", None)
             track_spec = TrackSpec(name=track, **map_metadata)
         return track_spec
 
@@ -154,10 +159,24 @@ class Track:
 
             # if exists, load raceline
             if (track_dir / f"{track}_raceline.csv").exists():
-                raceline = Raceline.from_raceline_file(
-                    track_dir / f"{track}_raceline.csv",
-                    track_scale=track_scale,
-                )
+                raceline_path = track_dir / f"{track}_raceline.csv"
+                try:
+                    raceline = Raceline.from_raceline_file(
+                        raceline_path,
+                        track_scale=track_scale,
+                    )
+                except (ValueError, KeyError) as error:
+                    # A MPPI track CSV is not a simulator raceline.  In
+                    # particular it has a comma-separated one-line header and
+                    # no vx_mps column, whereas the TUM raceline loader expects
+                    # a semicolon-separated three-line header.  Do not prevent
+                    # the simulator from starting merely because such a file
+                    # was named <map>_raceline.csv.
+                    print(
+                        f"Warning: ignoring incompatible raceline "
+                        f"{raceline_path}: {error}. Using centerline instead."
+                    )
+                    raceline = centerline
             else:
                 raceline = centerline
 
@@ -225,9 +244,16 @@ class Track:
             # if exists, load raceline
             raceline_path = path.parent / f"{path.stem}_raceline.csv"
             if raceline_path.exists():
-                raceline = Raceline.from_raceline_file(
-                    raceline_path, track_scale=track_scale
-                )
+                try:
+                    raceline = Raceline.from_raceline_file(
+                        raceline_path, track_scale=track_scale
+                    )
+                except (ValueError, KeyError) as error:
+                    print(
+                        f"Warning: ignoring incompatible raceline "
+                        f"{raceline_path}: {error}. Using centerline instead."
+                    )
+                    raceline = centerline
             else:
                 raceline = centerline
 

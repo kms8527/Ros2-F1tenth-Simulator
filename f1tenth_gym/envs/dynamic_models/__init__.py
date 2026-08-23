@@ -24,6 +24,7 @@ class DynamicModel(Enum):
     KINEMATIC_NOSLIP_NOIMU_DIRECT_SPEED = 6
     DYNAMIC_MLP_RESIDUAL = 7
     SIMULATOR_GRU = 8
+    DYNAMIC_SERVO_LAG = 9
 
     @staticmethod
     def from_string(model: str):
@@ -47,6 +48,8 @@ class DynamicModel(Enum):
             return DynamicModel.DYNAMIC_MLP_RESIDUAL
         elif model == "simulator_gru":
             return DynamicModel.SIMULATOR_GRU
+        elif model in ("dynamic_servo_lag", "DYNAMIC_SERVO_LAG"):
+            return DynamicModel.DYNAMIC_SERVO_LAG
         else:
             raise ValueError(f"Unknown model type {model}")
 
@@ -66,7 +69,8 @@ class DynamicModel(Enum):
             state = np.zeros(29)
         elif self in (DynamicModel.KINEMATIC_MLP, DynamicModel.KINEMATIC,
                       DynamicModel.KINEMATIC_NOSLIP_NOIMU_DIRECT_SPEED,
-                      DynamicModel.DYNAMIC_MLP_RESIDUAL):
+                      DynamicModel.DYNAMIC_MLP_RESIDUAL,
+                      DynamicModel.DYNAMIC_SERVO_LAG):
             # [x, y, steering, vx, yaw, yaw_rate, slip_angle, vy]
             state = np.zeros(8)
         elif self == DynamicModel.SIMULATOR_GRU:
@@ -102,6 +106,8 @@ class DynamicModel(Enum):
             raise RuntimeError("DYNAMIC_MLP_RESIDUAL uses its discrete RaceCar update")
         elif self == DynamicModel.SIMULATOR_GRU:
             raise RuntimeError("SIMULATOR_GRU uses its discrete RaceCar update")
+        elif self == DynamicModel.DYNAMIC_SERVO_LAG:
+            raise RuntimeError("DYNAMIC_SERVO_LAG uses its discrete RaceCar update")
         else:
             raise ValueError(f"Unknown model type {self}")
 
@@ -121,7 +127,8 @@ class DynamicModel(Enum):
             return get_standardized_state_kmlp
         elif self in (DynamicModel.KINEMATIC,
                       DynamicModel.KINEMATIC_NOSLIP_NOIMU_DIRECT_SPEED,
-                      DynamicModel.DYNAMIC_MLP_RESIDUAL):
+                      DynamicModel.DYNAMIC_MLP_RESIDUAL,
+                      DynamicModel.DYNAMIC_SERVO_LAG):
             return get_standardized_state_kinematic
         elif self == DynamicModel.SIMULATOR_GRU:
             return get_standardized_state_kinematic

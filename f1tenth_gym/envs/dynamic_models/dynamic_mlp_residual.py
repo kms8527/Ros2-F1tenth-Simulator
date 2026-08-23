@@ -34,12 +34,8 @@ def step(state, steer_command, speed_command, command_history, actuator_steer,
          position_speed_scale=.8633491306389823,
          Bf=2.815932661385218, Cf=1.3, Df=.37939550896899304, Ef=0.,
          Br=.3215940126165719, Cr=1.3, Dr=2.799999998765151, Er=0.,
-         Iz=.04712, low_speed_center=.8,
-         kinematic_yaw_rate_time_constant=.1,
-         kinematic_max_yaw_accel=15., max_residual_yaw_accel=12.,
-         residual_gate_steer_start=.4, residual_gate_steer_end=.4788,
-         max_total_yaw_accel=12., yaw_rate_kinematic_scale=.75,
-         yaw_rate_margin=.35, yaw_rate_lateral_accel_limit=9.5):
+         Iz=.04712, mlp_max_residual_ax=0., mlp_max_residual_ay=8.,
+         mlp_max_residual_yaw_accel=12.):
     """Return state/history/actuator states and synthetic FLU [wz, ax, ay].
 
     State layout is [x,y,steer_cmd,vx,yaw,yaw_rate,beta,vy].  The command is
@@ -114,46 +110,14 @@ def step(state, steer_command, speed_command, command_history, actuator_steer,
     normalized = ((feature-mean)/std).astype(np.float32)
     hidden1 = np.maximum(w1@normalized+b1, np.float32(0.))
     hidden2 = np.maximum(w2@hidden1+b2, np.float32(0.))
-    residual = np.clip(w3@hidden2+b3,
-                       np.asarray([-8., -8., -30.], np.float32),
-                       np.asarray([8., 8., 30.], np.float32)).astype(np.float32)
-    # CUDA intentionally uses the identified vx-command servo without an MLP
-    # longitudinal correction; keep the simulator plant identical.
-    residual[0] = np.float32(0.)
-    gate = np.float32(1./(1.+np.exp(-(abs(float(vx))-low_speed_center)/.2)))
-    residual[1:] *= gate
-
-    residual[2] = np.float32(np.clip(
-        residual[2], -max_residual_yaw_accel, max_residual_yaw_accel))
-    steer_gate_span = max(
-        float(residual_gate_steer_end-residual_gate_steer_start), 1e-4)
-    steer_gate = np.float32(np.clip(
-        (residual_gate_steer_end-abs(float(applied_steer))) /
-        steer_gate_span, 0., 1.))
-    residual[1:] *= steer_gate
+    residual_limit = np.asarray((mlp_max_residual_ax, mlp_max_residual_ay,
+                                 mlp_max_residual_yaw_accel), np.float32)
+    residual = np.clip(w3@hidden2+b3, -residual_limit,
+                       residual_limit).astype(np.float32)
 
     next_vx = np.float32(base_next_vx+residual[0]*dt)
     next_vy = np.float32(base_next_vy+residual[1]*dt)
     next_yaw_rate = np.float32(base_next_yaw_rate+residual[2]*dt)
-    max_yaw_delta = np.float32(max_total_yaw_accel*dt)
-    next_yaw_rate = np.float32(yaw_rate+np.clip(
-        next_yaw_rate-yaw_rate, -max_yaw_delta, max_yaw_delta))
-    wheelbase = max(float(lf+lr), 1e-3)
-    kinematic_yaw = abs(float(next_vx)*np.tan(float(applied_steer))/wheelbase)
-    friction_yaw = float(yaw_rate_lateral_accel_limit) / max(abs(float(next_vx)), .5)
-    yaw_envelope = min(
-        float(yaw_rate_kinematic_scale)*kinematic_yaw+float(yaw_rate_margin),
-        friction_yaw)
-    next_yaw_rate = np.float32(np.clip(
-        next_yaw_rate, -yaw_envelope, yaw_envelope))
-    if abs(float(vx)) < low_speed_center:
-        kinematic_yaw_rate = float(next_vx)*np.tan(float(applied_steer))/wheelbase
-        yaw_accel = np.clip(
-            (kinematic_yaw_rate-float(yaw_rate)) /
-            max(float(kinematic_yaw_rate_time_constant), 1e-3),
-            -float(kinematic_max_yaw_accel), float(kinematic_max_yaw_accel))
-        next_yaw_rate = np.float32(yaw_rate+yaw_accel*dt)
-        next_vy = np.float32(0.)
     next_speed = np.float32(np.hypot(next_vx, next_vy))
     next_beta = np.float32(np.arctan2(next_vy, next_vx))
     output = current.copy()
@@ -164,10 +128,8 @@ def step(state, steer_command, speed_command, command_history, actuator_steer,
     output[4] = np.arctan2(np.sin(current[4]+next_yaw_rate*dt),
                            np.cos(current[4]+next_yaw_rate*dt))
     output[5] = next_yaw_rate; output[6] = next_beta; output[7] = next_vy
-    predicted_ay = (next_vx*next_yaw_rate if abs(float(vx)) < low_speed_center
-                    else base_ay+residual[1])
     synthetic_imu = np.asarray((next_yaw_rate, base_ax+residual[0],
-                                predicted_ay), np.float32)
+                                base_ay+residual[1]), np.float32)
     if mean.size == 24:
         next_vx_history = np.concatenate(
             (vx_history[1:], np.asarray([next_vx], np.float32)))
