@@ -54,7 +54,7 @@ def step(state, steer_command, speed_command, command_history, actuator_steer,
     history[-2:] = (steer_command, speed_command)
 
     target_steer = np.float32(np.clip(
-        steer_command, -max_steer, max_steer))
+        steer_scale*steer_command+steer_bias, -max_steer, max_steer))
     steer_rate = np.float32(np.clip(
         (target_steer-actuator_steer)/max(steer_time_constant, 1e-3),
         -max_steer_rate, max_steer_rate))
