@@ -7,7 +7,7 @@ def step(state, steer_command, speed_command, actuator_steer,
          actuator_speed_reference, *, dt, lf, lr, mass, min_speed, max_speed,
          min_accel, max_accel, speed_servo_kp, speed_accel_tau,
          speed_brake_tau, max_speed_reference_rate, steer_scale, steer_bias,
-         steer_time_constant, max_steer_rate, Bf, Cf, Df, Ef, Br, Cr, Dr,
+         steer_time_constant, max_steer, max_steer_rate, Bf, Cf, Df, Ef, Br, Cr, Dr,
          Er, Iz):
     """Advance one MPPI knot and return state, actuator states, and FLU IMU.
 
@@ -19,12 +19,12 @@ def step(state, steer_command, speed_command, actuator_steer,
     speed_command = np.float32(np.clip(speed_command, min_speed, max_speed))
 
     target_steer = np.float32(np.clip(
-        steer_scale * steer_command + steer_bias, -0.55, 0.55))
+        steer_command, -max_steer, max_steer))
     steer_rate = np.float32(np.clip(
         (target_steer - actuator_steer) / max(steer_time_constant, 1.0e-3),
         -max_steer_rate, max_steer_rate))
     applied_steer = np.float32(np.clip(
-        actuator_steer + steer_rate * dt, -0.55, 0.55))
+        actuator_steer + steer_rate * dt, -max_steer, max_steer))
 
     speed_tau = (speed_accel_tau if speed_command >= actuator_speed_reference
                  else speed_brake_tau)

@@ -30,6 +30,7 @@ def step(state, steer_command, speed_command, command_history, actuator_steer,
          speed_accel_tau=.04, speed_brake_tau=.02,
          max_speed_reference_rate=8., steer_scale=.50927964,
          steer_bias=.01015773, steer_time_constant=.15514851356820727,
+         max_steer=.4788,
          max_steer_rate=.8344090950084138,
          position_speed_scale=.8633491306389823,
          Bf=2.815932661385218, Cf=1.3, Df=.37939550896899304, Ef=0.,
@@ -53,12 +54,12 @@ def step(state, steer_command, speed_command, command_history, actuator_steer,
     history[-2:] = (steer_command, speed_command)
 
     target_steer = np.float32(np.clip(
-        steer_scale*steer_command+steer_bias, -.55, .55))
+        steer_command, -max_steer, max_steer))
     steer_rate = np.float32(np.clip(
         (target_steer-actuator_steer)/max(steer_time_constant, 1e-3),
         -max_steer_rate, max_steer_rate))
     applied_steer = np.float32(np.clip(
-        actuator_steer+steer_rate*dt, -.55, .55))
+        actuator_steer+steer_rate*dt, -max_steer, max_steer))
 
     speed_tau = speed_accel_tau if speed_command >= actuator_speed_reference else speed_brake_tau
     reference_rate = np.float32(np.clip(
