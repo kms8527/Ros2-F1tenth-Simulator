@@ -75,10 +75,11 @@ bridge:
     mppi_max_speed: 4.0
     mppi_min_accel: -1.0
     mppi_max_accel: 1.0
+    max_steer: 0.4788
     speed_servo_kp: 27.85168694
-    # Same identified kinematic command mapping as smooth-mppi-cuda/config/params.yaml.
+    # Ackermann steering command is already wheel angle.
     kinematic_steer_scale: 1.0
-    kinematic_steer_bias: 0.01015773
+    kinematic_steer_bias: 0.0
     kinematic_position_speed_scale: 0.8633491306389823
     steer_servo_time_constant: 0.15514851356820727
     actuator_max_steer_rate: 0.8344090950084138
