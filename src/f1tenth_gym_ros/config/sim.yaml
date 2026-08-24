@@ -53,9 +53,11 @@ bridge:
     restart_simulation: false
     scale: 1.0
     # Must match smooth-mppi-cuda/config/params.yaml.
-    # Same adaptive-KF-compatible 20-D residual plant as CUDA MPPI.
-    # Exact non-MLP Pacejka + actuator-lag plant used by CUDA MPPI.
-    dynamics_model: DYNAMIC_SERVO_LAG
+    # Same 22-D IMU-feature residual plant as CUDA MPPI.
+    # Match the deployed MPPI plant: one learned residual transition is
+    # evaluated every 40 ms.  The 10 ms simulator physics ticks only expose
+    # intermediate states between two consecutive 40 ms model knots.
+    dynamics_model: dynamic_mlp_residual_servo_lag
     kinematic_noslip_noimu_weights_path: /home/a/smooth-mppi-cuda/config/ifac0807_strict_noslip_noimu_16d.bin
     lateral_velocity_kf_enabled: false
     # Used only when dynamics_model is kinematic_mlp.
