@@ -84,9 +84,26 @@ def step(state, steer_command, speed_command, command_history, actuator_steer,
     rear_inner = np.float32(bra-Er*(bra-np.arctan(bra)))
     front_force = np.float32(fzf*Df*np.sin(Cf*np.arctan(front_inner)))
     rear_force = np.float32(fzr*Dr*np.sin(Cr*np.arctan(rear_inner)))
-    base_ay = np.float32((front_force*np.cos(applied_steer)+rear_force)/mass)
-    base_yaw_accel = np.float32(
+    dynamic_ay = np.float32((front_force*np.cos(applied_steer)+rear_force)/mass)
+    dynamic_yaw_accel = np.float32(
         (lf*front_force*np.cos(applied_steer)-lr*rear_force)/Iz)
+    # Exact CUDA low-speed contract.  Pacejka and the learned residual are
+    # faded in between 0.2 and 0.5 m/s; below that, a stable kinematic yaw
+    # response is used instead of evaluating an ill-conditioned slip model.
+    blend_input = np.float32(np.clip((abs(float(vx))-.2)/.3, 0., 1.))
+    dynamic_blend = np.float32(
+        blend_input*blend_input*(3.-2.*blend_input))
+    low_speed_tau = np.float32(.1)
+    kinematic_yaw_rate = np.float32(
+        vx*np.tan(applied_steer)/max(lf+lr, 1.e-6))
+    kinematic_ay = np.float32(vx*yaw_rate-vy/low_speed_tau)
+    kinematic_yaw_accel = np.float32(
+        (kinematic_yaw_rate-yaw_rate)/low_speed_tau)
+    base_ay = np.float32(
+        dynamic_blend*dynamic_ay+(1.-dynamic_blend)*kinematic_ay)
+    base_yaw_accel = np.float32(
+        dynamic_blend*dynamic_yaw_accel
+        +(1.-dynamic_blend)*kinematic_yaw_accel)
     base_next_vx = np.float32(vx+(base_ax+vy*yaw_rate)*dt)
     base_next_vy = np.float32(vy+(base_ay-vx*yaw_rate)*dt)
     base_next_yaw_rate = np.float32(yaw_rate+base_yaw_accel*dt)
@@ -115,6 +132,7 @@ def step(state, steer_command, speed_command, command_history, actuator_steer,
                                  mlp_max_residual_yaw_accel), np.float32)
     residual = np.clip(w3@hidden2+b3, -residual_limit,
                        residual_limit).astype(np.float32)
+    residual *= dynamic_blend
 
     next_vx = np.float32(base_next_vx+residual[0]*dt)
     next_vy = np.float32(base_next_vy+residual[1]*dt)
