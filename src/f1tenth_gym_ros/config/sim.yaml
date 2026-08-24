@@ -69,35 +69,37 @@ bridge:
     simulator_gru_model_path: /home/a/smooth-mppi-cuda/model_tuning/results/simulator_gru_0817_0820_overfit_seed31/simulator_gru.ts
     simulator_gru_history_steps: 50
     simulator_gru_model_dt: 0.02
-    dynamic_mlp_weights_path: /home/a/smooth-mppi-cuda/config/dynamic_40ms_residual_servo_lag.bin
+    # gym_bridge_launch.py replaces this fallback with the model path resolved
+    # from MPPI config/params.yaml.
+    dynamic_mlp_weights_path: config/dynamic_40ms_residual_servo_lag.bin
     dynamic_mlp_vx_delta_weights_path: /home/a/smooth-mppi-cuda/config/dynamic_40ms_vx_delta_history_24d.bin
     mppi_min_speed: 0.5
-    mppi_max_speed: 4.0
-    mppi_min_accel: -1.0
-    mppi_max_accel: 1.0
+    mppi_max_speed: 12.0
+    mppi_min_accel: -9.0
+    mppi_max_accel: 10.0
     max_steer: 0.4788
-    speed_servo_kp: 27.85168694
+    speed_servo_kp: 10.3739069
     # Ackermann steering command is already wheel angle.
-    kinematic_steer_scale: 1.0
-    kinematic_steer_bias: 0.0
-    kinematic_position_speed_scale: 0.8633491306389823
-    steer_servo_time_constant: 0.15514851356820727
-    actuator_max_steer_rate: 0.8344090950084138
-    speed_reference_accel_time_constant: 0.09013387
-    speed_reference_brake_time_constant: 0.09717008
-    actuator_max_speed_reference_rate: 5.89577526
-    dynamic_mlp_B_f: 2.699455556625641
-    dynamic_mlp_C_f: 0.5000000000006778
-    dynamic_mlp_D_f: 0.9640880886587351
-    dynamic_mlp_E_f: 0.5180579952591258
-    dynamic_mlp_B_r: 0.8540693080601909
-    dynamic_mlp_C_r: 0.5000039198559398
-    dynamic_mlp_D_r: 3.1890651732250443
-    dynamic_mlp_E_r: -0.9999999999999999
-    dynamic_mlp_I_z: 0.04712
-    mass: 3.74
-    l_f: 0.163
-    l_r: 0.161
+    kinematic_steer_scale: 1.29371593
+    kinematic_steer_bias: -0.0245638368
+    kinematic_position_speed_scale: 1.0
+    steer_servo_time_constant: 0.185053863
+    actuator_max_steer_rate: 6.544984694978735
+    speed_reference_accel_time_constant: 0.0358766486
+    speed_reference_brake_time_constant: 0.112208409
+    actuator_max_speed_reference_rate: 10.0
+    dynamic_mlp_B_f: 2.8106457835009238
+    dynamic_mlp_C_f: 0.775431537087077
+    dynamic_mlp_D_f: 0.9220400888696738
+    dynamic_mlp_E_f: -4.92271228377628
+    dynamic_mlp_B_r: 3.1366228633512927
+    dynamic_mlp_C_r: 0.33160175643604217
+    dynamic_mlp_D_r: 2.4363987954512116
+    dynamic_mlp_E_r: -10.0
+    dynamic_mlp_I_z: 0.09059291359052173
+    mass: 3.904
+    l_f: 0.1833
+    l_r: 0.1407
     kinematic_no_slip: true
 
     # opponent parameters

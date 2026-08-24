@@ -39,7 +39,7 @@ def simulator_paths(package_share):
     gym_source = os.path.join(workspace, 'src', 'f1tenth_gym')
     project_root = os.path.dirname(workspace)
     map_path = os.environ.get('F1TENTH_SIM_MAP_PATH', os.path.join(
-        project_root, 'data', 'map2', 'map2'))
+        project_root, 'data', 'ifac2026', 'ifac2026'))
     return gym_source, map_path
 
 
@@ -108,6 +108,7 @@ def generate_launch_description():
         get_package_share_directory('smppi_cuda_controller'),
         'config',
         'params.yaml')
+    controller_share = get_package_share_directory('smppi_cuda_controller')
     controller_parameters = yaml.safe_load(open(controller_config, 'r'))[
         '/**']['ros__parameters']
     # Keep simulator plant parameters sourced from the same params.yaml as
@@ -134,6 +135,10 @@ def generate_launch_description():
         'mppi_max_accel': controller_parameters['max_accel'],
         'dynamic_mlp_model_dt': controller_parameters['model_dt'],
     })
+    residual_path = controller_parameters['dynamic_mlp_servo_lag_weights_path']
+    if not os.path.isabs(residual_path):
+        residual_path = os.path.join(controller_share, residual_path)
+    controller_override['dynamic_mlp_weights_path'] = residual_path
     config_dict = yaml.safe_load(open(config, 'r'))
     requested_num_agents = int(os.environ.get(
         'F1TENTH_SIM_NUM_AGENTS',
@@ -147,6 +152,29 @@ def generate_launch_description():
     if not os.path.isfile(local_map_path + '.yaml'):
         raise RuntimeError('Simulator map is missing: ' + local_map_path + '.yaml')
     config_dict['bridge']['ros__parameters']['map_path'] = local_map_path
+    # The selected ROS map YAML is the source of truth for its image format.
+    # ``sim.yaml`` historically hard-coded ``.pgm``, which makes otherwise
+    # valid PNG maps fail as ``<map>.pgm`` before the simulator starts.
+    with open(local_map_path + '.yaml', 'r') as file:
+        map_yaml = yaml.safe_load(file)
+    map_image_name = str(map_yaml.get('image', ''))
+    map_image_extension = os.path.splitext(map_image_name)[1]
+    if not map_image_extension:
+        raise RuntimeError(
+            'Map YAML image must have a file extension: ' + local_map_path + '.yaml')
+    expected_map_image = os.path.join(
+        os.path.dirname(local_map_path), map_image_name)
+    if not os.path.isfile(expected_map_image):
+        raise RuntimeError('Simulator map image is missing: ' + expected_map_image)
+    # f1tenth_gym builds the image name as map_path + map_img_ext, so verify
+    # that contract explicitly rather than silently loading a different file.
+    if os.path.realpath(expected_map_image) != os.path.realpath(
+            local_map_path + map_image_extension):
+        raise RuntimeError(
+            'Simulator requires the map image basename to match the YAML: '
+            f'expected {local_map_path + map_image_extension}, YAML references '
+            f'{expected_map_image}')
+    config_dict['bridge']['ros__parameters']['map_img_ext'] = map_image_extension
     (ego_spawn, opponent_spawn, centerline_path, opponent_spawn_index,
      opponent_spawn_distance) = centerline_spawn_poses(local_map_path)
     simulator_dynamics = os.environ.get('F1TENTH_SIM_DYNAMICS_MODEL')
@@ -187,6 +215,7 @@ def generate_launch_description():
         name='bridge',
         parameters=[config, controller_override, {
                     'map_path': local_map_path,
+                    'map_img_ext': map_image_extension,
                     'num_agent': requested_num_agents}, simulator_override,
                     obstacle_override, ego_override, {
             'use_sim_time': False,  # Always use real time for the bridge node
@@ -209,8 +238,6 @@ def generate_launch_description():
     )
 
     # Create custom yaml file for map server by copying the original yaml file and scaling the resolution by the sim.yaml scale
-    with open(config_dict['bridge']['ros__parameters']['map_path'] + '.yaml', 'r') as file:
-        map_yaml = yaml.safe_load(file)
     map_yaml['resolution'] *= config_dict['bridge']['ros__parameters']['scale']
     origin = map_yaml['origin']
     scaled_origin = [
