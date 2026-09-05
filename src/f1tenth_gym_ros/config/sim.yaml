@@ -49,8 +49,9 @@ bridge:
     scan_beams: 1080
 
     # map parameters
-    # Austin  berlin  levinelobby_track  porto  icra2025  iccas2024  iv2024
-    map_path: '/home/a/smooth-mppi-cuda/data/map2/map2'
+    # Map basename without .yaml; relative paths use the workspace root.
+    # Absolute paths and ~/ paths are also supported. Set the map only here.
+    map_path: 'maps/ifac2026/ifac2026'
     map_img_ext: '.pgm'
 
     # car parameters and scale

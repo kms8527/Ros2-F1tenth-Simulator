@@ -32,15 +32,17 @@ import math
 import os
 import yaml
 
-def simulator_paths(package_share):
-    """Resolve the simulator sources belonging to this colcon workspace."""
+def simulator_paths(package_share, map_path):
+    """Resolve sources and the sim.yaml map path relative to the workspace."""
     workspace = os.path.dirname(os.path.dirname(os.path.dirname(
         os.path.dirname(package_share))))
     gym_source = os.path.join(workspace, 'src', 'f1tenth_gym')
-    project_root = os.path.dirname(workspace)
-    map_path = os.environ.get('F1TENTH_SIM_MAP_PATH', os.path.join(
-        project_root, 'data', 'ifac2026', 'ifac2026'))
-    return gym_source, map_path
+    if not isinstance(map_path, str) or not map_path.strip():
+        raise ValueError('sim.yaml bridge.ros__parameters.map_path must be a non-empty string')
+    map_path = os.path.expanduser(map_path)
+    if not os.path.isabs(map_path):
+        map_path = os.path.join(workspace, map_path)
+    return gym_source, os.path.abspath(map_path)
 
 
 def centerline_spawn_poses(map_path):
@@ -151,7 +153,8 @@ def generate_launch_description():
     if requested_num_agents not in (1, 2):
         raise ValueError('F1TENTH_SIM_NUM_AGENTS must be 1 or 2')
     config_dict['bridge']['ros__parameters']['num_agent'] = requested_num_agents
-    gym_source, local_map_path = simulator_paths(package_share)
+    gym_source, local_map_path = simulator_paths(
+        package_share, config_dict['bridge']['ros__parameters']['map_path'])
     if not os.path.isdir(os.path.join(gym_source, 'f1tenth_gym')):
         raise RuntimeError('Pinned f1tenth_gym source is missing: ' + gym_source)
     if not os.path.isfile(local_map_path + '.yaml'):
