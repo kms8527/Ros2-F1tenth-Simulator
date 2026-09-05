@@ -1,4 +1,0 @@
-[submodule "src/f1tenth_gym"]
-	path = src/f1tenth_gym
-	url = git@github.com:kms8527/Ros2-F1tenth-Simulator.git
-	branch = f1tenth-gym-deep-MPPI
