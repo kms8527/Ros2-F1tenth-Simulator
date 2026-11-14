@@ -63,7 +63,7 @@ bridge:
     # Match the deployed MPPI plant: one learned residual transition is
     # evaluated every 40 ms.  The 10 ms simulator physics ticks only expose
     # intermediate states between two consecutive 40 ms model knots.
-    dynamics_model: dynamic_mlp_residual_servo_lag
+    dynamics_model: dynamic_servo_lag
     kinematic_noslip_noimu_weights_path: /home/a/smooth-mppi-cuda/config/ifac0807_strict_noslip_noimu_16d.bin
     lateral_velocity_kf_enabled: false
     # Used only when dynamics_model is kinematic_mlp.
@@ -72,14 +72,18 @@ bridge:
     # 10 ms 중간 상태로 보간해서 odom/TF를 부드럽게 발행한다.
     mppi_dt: 0.01
     dynamic_mlp_model_dt: 0.04
+    # Legacy E2E/residual hybrid artifacts.  These are retained for explicit
+    # A/B experiments but are not used by the default slippery plant.
+    e2e_residual_hybrid_model_path: /home/a/f1_control/config/e2e_residual_hybrid_lateral.ts
+    e2e_residual_hybrid_residual_path: /home/a/f1_control/model_tuning/results/icra2027_surface_residual/slippery/final_balanced/dynamic_40ms_residual.bin
     # 실시간 MPPI가 아닌 simulator plant 전용 1.09M-parameter GRU.
     # 0817~0820 전체 실차 구간의 1.2초 재귀 궤적 오차를 최소화한 simulator 전용 모델.
     simulator_gru_model_path: /home/a/smooth-mppi-cuda/model_tuning/results/simulator_gru_0817_0820_overfit_seed31/simulator_gru.ts
     simulator_gru_history_steps: 50
     simulator_gru_model_dt: 0.02
-    # gym_bridge_launch.py replaces this fallback with the model path resolved
-    # from MPPI config/params.yaml.
-    dynamic_mlp_weights_path: config/dynamic_40ms_residual_servo_lag.bin
+    # Slippery-surface servo-lag residual plant.  gym_bridge_launch.py keeps
+    # this exact checkpoint when dynamic_mlp_residual_servo_lag is selected.
+    dynamic_mlp_weights_path: /home/a/f1_control/model_tuning/results/icra2027_surface_residual/slippery/final_balanced/dynamic_40ms_residual.bin
     dynamic_mlp_vx_delta_weights_path: /home/a/smooth-mppi-cuda/config/dynamic_40ms_vx_delta_history_24d.bin
     mppi_min_speed: 0.5
     mppi_max_speed: 12.0

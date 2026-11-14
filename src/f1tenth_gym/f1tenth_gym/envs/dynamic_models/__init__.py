@@ -25,6 +25,8 @@ class DynamicModel(Enum):
     DYNAMIC_MLP_RESIDUAL = 7
     SIMULATOR_GRU = 8
     DYNAMIC_SERVO_LAG = 9
+    E2E_RESIDUAL_HYBRID = 10
+    LCMPC_ST = 11  # MDN-LCMPC ORIGINALMODEL plant
 
     @staticmethod
     def from_string(model: str):
@@ -50,6 +52,10 @@ class DynamicModel(Enum):
             return DynamicModel.SIMULATOR_GRU
         elif model in ("dynamic_servo_lag", "DYNAMIC_SERVO_LAG"):
             return DynamicModel.DYNAMIC_SERVO_LAG
+        elif model == "e2e_residual_hybrid":
+            return DynamicModel.E2E_RESIDUAL_HYBRID
+        elif model in ("lcmpc_st", "LCMPC_ST"):
+            return DynamicModel.LCMPC_ST
         else:
             raise ValueError(f"Unknown model type {model}")
 
@@ -61,7 +67,7 @@ class DynamicModel(Enum):
         if self == DynamicModel.KS:
             # state is [x, y, steer_angle, vel, yaw_angle]
             state = np.zeros(5)
-        elif self == DynamicModel.ST:
+        elif self in (DynamicModel.ST, DynamicModel.LCMPC_ST):
             # state is [x, y, steer_angle, vel, yaw_angle, yaw_rate, slip_angle]
             state = np.zeros(7)
         elif self == DynamicModel.MB:
@@ -70,7 +76,8 @@ class DynamicModel(Enum):
         elif self in (DynamicModel.KINEMATIC_MLP, DynamicModel.KINEMATIC,
                       DynamicModel.KINEMATIC_NOSLIP_NOIMU_DIRECT_SPEED,
                       DynamicModel.DYNAMIC_MLP_RESIDUAL,
-                      DynamicModel.DYNAMIC_SERVO_LAG):
+                      DynamicModel.DYNAMIC_SERVO_LAG,
+                      DynamicModel.E2E_RESIDUAL_HYBRID):
             # [x, y, steering, vx, yaw, yaw_rate, slip_angle, vy]
             state = np.zeros(8)
         elif self == DynamicModel.SIMULATOR_GRU:
@@ -108,6 +115,10 @@ class DynamicModel(Enum):
             raise RuntimeError("SIMULATOR_GRU uses its discrete RaceCar update")
         elif self == DynamicModel.DYNAMIC_SERVO_LAG:
             raise RuntimeError("DYNAMIC_SERVO_LAG uses its discrete RaceCar update")
+        elif self == DynamicModel.E2E_RESIDUAL_HYBRID:
+            raise RuntimeError("E2E_RESIDUAL_HYBRID uses its discrete RaceCar update")
+        elif self == DynamicModel.LCMPC_ST:
+            raise RuntimeError("LCMPC_ST uses its discrete RaceCar update")
         else:
             raise ValueError(f"Unknown model type {self}")
 
@@ -119,7 +130,7 @@ class DynamicModel(Enum):
         """
         if self == DynamicModel.KS:
             return get_standardized_state_ks
-        elif self == DynamicModel.ST:
+        elif self in (DynamicModel.ST, DynamicModel.LCMPC_ST):
             return get_standardized_state_st
         elif self == DynamicModel.MB:
             return get_standardized_state_mb
@@ -128,7 +139,8 @@ class DynamicModel(Enum):
         elif self in (DynamicModel.KINEMATIC,
                       DynamicModel.KINEMATIC_NOSLIP_NOIMU_DIRECT_SPEED,
                       DynamicModel.DYNAMIC_MLP_RESIDUAL,
-                      DynamicModel.DYNAMIC_SERVO_LAG):
+                      DynamicModel.DYNAMIC_SERVO_LAG,
+                      DynamicModel.E2E_RESIDUAL_HYBRID):
             return get_standardized_state_kinematic
         elif self == DynamicModel.SIMULATOR_GRU:
             return get_standardized_state_kinematic

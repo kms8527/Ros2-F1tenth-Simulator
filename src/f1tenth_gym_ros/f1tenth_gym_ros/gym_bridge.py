@@ -124,6 +124,8 @@ class GymBridge(Node):
         self.declare_parameter('dynamic_mlp_weights_path')
         self.declare_parameter('dynamic_mlp_vx_delta_weights_path')
         self.declare_parameter('dynamic_mlp_model_dt')
+        self.declare_parameter('e2e_residual_hybrid_model_path')
+        self.declare_parameter('e2e_residual_hybrid_residual_path')
         self.declare_parameter('simulator_gru_model_path')
         self.declare_parameter('simulator_gru_history_steps')
         self.declare_parameter('simulator_gru_model_dt')
@@ -155,6 +157,17 @@ class GymBridge(Node):
         self.declare_parameter('l_r')
 
         self.declare_parameter('drive_with_accel')
+        # MDN-LCMPC plant (dynamics_model: lcmpc_st). Values are copied from
+        # control/MPC/params/params.yaml by lcmpc_sim_launch.py.
+        for name, default in (
+                ('lcmpc_mass', 3.84), ('lcmpc_l_f', 0.163), ('lcmpc_l_r', 0.162),
+                ('lcmpc_h_cg', 0.074), ('lcmpc_I_z', 0.0855), ('lcmpc_mu', 1.0),
+                ('lcmpc_C_Sf', 4.718), ('lcmpc_C_Sr', 5.4562), ('lcmpc_Cm0', 0.04),
+                ('lcmpc_steer_max', 0.4089), ('lcmpc_accel_max', 15.0),
+                ('lcmpc_decel_max', 15.0), ('lcmpc_vel_threshold', 0.5),
+                ('lcmpc_speed_max', 10.0), ('lcmpc_width', 0.32),
+                ('lcmpc_length', 0.51)):
+            self.declare_parameter(name, default)
 
         # Flag to know whether to publish the sim time or not
         # Has to be different than use_sim_time so we can still use real time to trigger timer callbacks
@@ -184,6 +197,7 @@ class GymBridge(Node):
                               'kinematic_noslip_noimu_direct_speed',
                               'dynamic_mlp_residual_servo_lag',
                               'dynamic_mlp_residual_servo_lag_vx_delta_24d',
+                              'e2e_residual_hybrid',
                               'dynamic_servo_lag', 'DYNAMIC_SERVO_LAG',
                               'simulator_gru'):
             self.vehicle_params = dict(self.vehicle_params)
@@ -196,12 +210,18 @@ class GymBridge(Node):
                 self.vehicle_params['max_accel_mppi'] = float(self.get_parameter('mppi_max_accel').value)
             elif dynamics_model in ('dynamic_mlp_residual_servo_lag',
                                      'dynamic_mlp_residual_servo_lag_vx_delta_24d',
+                                     'e2e_residual_hybrid',
                                      'dynamic_servo_lag', 'DYNAMIC_SERVO_LAG'):
                 if dynamics_model not in ('dynamic_servo_lag', 'DYNAMIC_SERVO_LAG'):
                     weight_parameter = ('dynamic_mlp_vx_delta_weights_path'
                         if dynamics_model.endswith('vx_delta_24d')
-                        else 'dynamic_mlp_weights_path')
+                        else ('e2e_residual_hybrid_residual_path'
+                              if dynamics_model == 'e2e_residual_hybrid'
+                              else 'dynamic_mlp_weights_path'))
                     self.vehicle_params['dynamic_mlp_weights_path'] = self.get_parameter(weight_parameter).value
+                    if dynamics_model == 'e2e_residual_hybrid':
+                        self.vehicle_params['e2e_residual_hybrid_model_path'] = (
+                            self.get_parameter('e2e_residual_hybrid_model_path').value)
                 self.vehicle_params['dynamic_mlp_model_dt'] = float(self.get_parameter('dynamic_mlp_model_dt').value)
                 self.vehicle_params['speed_servo_kp'] = float(self.get_parameter('speed_servo_kp').value)
                 self.vehicle_params['min_accel_mppi'] = float(self.get_parameter('mppi_min_accel').value)
@@ -243,6 +263,25 @@ class GymBridge(Node):
             self.vehicle_params['kinematic_steer_bias'] = float(self.get_parameter('kinematic_steer_bias').value)
             self.vehicle_params['kinematic_no_slip'] = bool(self.get_parameter('kinematic_no_slip').value)
 
+        if dynamics_model in ('lcmpc_st', 'LCMPC_ST'):
+            g = lambda n: float(self.get_parameter('lcmpc_' + n).value)
+            self.vehicle_params = dict(self.vehicle_params)
+            self.vehicle_params.update({
+                'm': g('mass'), 'lf': g('l_f'), 'lr': g('l_r'), 'h': g('h_cg'),
+                'I': g('I_z'), 'mu': g('mu'), 'C_Sf': g('C_Sf'), 'C_Sr': g('C_Sr'),
+                's_min': -g('steer_max'), 's_max': g('steer_max'),
+                'v_min': 0.0, 'v_max': g('speed_max'),
+                'width': g('width'), 'length': g('length'),
+                'lcmpc_Cm0': g('Cm0'), 'lcmpc_accel_max': g('accel_max'),
+                'lcmpc_decel_max': g('decel_max'),
+                'lcmpc_vel_threshold': g('vel_threshold'),
+                'v_max_mppi': g('speed_max'),
+            })
+            self.get_logger().info('LCMPC_ST plant params: %s' % {
+                k: v for k, v in self.vehicle_params.items()
+                if k in ('m', 'lf', 'lr', 'h', 'I', 'mu', 'C_Sf', 'C_Sr', 's_max',
+                         'v_max', 'lcmpc_Cm0', 'lcmpc_vel_threshold')})
+
         # Split the path and the name
         path = self.get_parameter('map_path').value
         name = path.split('/')[-1].split('.')[0]
@@ -262,6 +301,7 @@ class GymBridge(Node):
             'kinematic_noslip_noimu_direct_speed',
             'dynamic_mlp_residual_servo_lag',
             'dynamic_mlp_residual_servo_lag_vx_delta_24d',
+            'e2e_residual_hybrid',
             'dynamic_servo_lag', 'DYNAMIC_SERVO_LAG',
             'simulator_gru')
         self.get_logger().info(
@@ -280,6 +320,11 @@ class GymBridge(Node):
                     self.vehicle_params['steer_servo_time_constant'],
                     self.vehicle_params['speed_reference_accel_time_constant'],
                     self.vehicle_params['speed_reference_brake_time_constant']))
+        elif dynamics_model == 'e2e_residual_hybrid':
+            self.get_logger().info(
+                'Hybrid plant: residual vx/ax=%s; E2E vy/r=%s' % (
+                    self.vehicle_params['dynamic_mlp_weights_path'],
+                    self.vehicle_params['e2e_residual_hybrid_model_path']))
         # Rendering is not used by the ROS bridge itself. Keep it opt-in so
         # headless simulator runs do not require a Qt/pygame backend.
         render_mode = None

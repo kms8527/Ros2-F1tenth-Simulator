@@ -185,10 +185,37 @@ def generate_launch_description():
     config_dict['bridge']['ros__parameters']['map_img_ext'] = map_image_extension
     (ego_spawn, opponent_spawn, centerline_path, opponent_spawn_index,
      opponent_spawn_distance) = centerline_spawn_poses(local_map_path)
-    simulator_dynamics = os.environ.get('F1TENTH_SIM_DYNAMICS_MODEL')
-    simulator_override = {}
-    if simulator_dynamics:
-        simulator_override['dynamics_model'] = simulator_dynamics
+    simulator_dynamics = os.environ.get(
+        'F1TENTH_SIM_DYNAMICS_MODEL',
+        config_dict['bridge']['ros__parameters']['dynamics_model'])
+    simulator_override = {'dynamics_model': simulator_dynamics}
+    if simulator_dynamics in (
+            'dynamic_mlp_residual_servo_lag',
+            'dynamic_mlp_residual_servo_lag_vx_delta_24d'):
+        weight_parameter = ('dynamic_mlp_vx_delta_weights_path'
+                            if simulator_dynamics.endswith('vx_delta_24d')
+                            else 'dynamic_mlp_weights_path')
+        simulator_override['dynamic_mlp_weights_path'] = (
+            config_dict['bridge']['ros__parameters'][weight_parameter])
+        # Opt-in: take the residual weights from F1TENTH_SIM_PARAMS_FILE
+        # (dynamic_mlp_servo_lag_weights_path) so the network always pairs
+        # with the classic parameters it was trained on top of.
+        if os.environ.get('F1TENTH_SIM_RESIDUAL_FROM_PARAMS', '0') != '0':
+            simulator_override['dynamic_mlp_weights_path'] = residual_path
+        print('Simulator residual weights: ' +
+              simulator_override['dynamic_mlp_weights_path'])
+        if not os.path.isfile(simulator_override['dynamic_mlp_weights_path']):
+            raise RuntimeError('Simulator residual weights are missing: ' +
+                               simulator_override['dynamic_mlp_weights_path'])
+    elif simulator_dynamics == 'e2e_residual_hybrid':
+        simulator_override.update({
+            'dynamic_mlp_weights_path': config_dict['bridge']['ros__parameters'][
+                'e2e_residual_hybrid_residual_path'],
+            'e2e_residual_hybrid_residual_path': config_dict['bridge']['ros__parameters'][
+                'e2e_residual_hybrid_residual_path'],
+            'e2e_residual_hybrid_model_path': config_dict['bridge']['ros__parameters'][
+                'e2e_residual_hybrid_model_path'],
+        })
     has_opp = requested_num_agents > 1
     teleop = config_dict['bridge']['ros__parameters']['kb_teleop']
     use_sim_time = config_dict['bridge']['ros__parameters']['use_sim_time']

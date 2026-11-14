@@ -35,7 +35,11 @@ from .dynamic_models.kinematic_discrete import step as kinematic_step
 from .dynamic_models.kinematic_noimu_direct import load_weights as load_direct_weights, step as direct_speed_step
 from .dynamic_models.dynamic_mlp_residual import load_weights as load_dynamic_residual_weights, step as dynamic_residual_step
 from .dynamic_models.dynamic_servo_lag import step as dynamic_servo_lag_step
+from .dynamic_models.e2e_residual_hybrid import (
+    load_lateral_model as load_hybrid_lateral_model,
+    step as e2e_residual_hybrid_step)
 from .dynamic_models.simulator_gru import SimulatorGRUPlant
+from .dynamic_models.lcmpc_st import step as lcmpc_st_step
 from .action import CarAction
 from .collision_models import collision_multiple, get_vertices
 from .integrator import EulerIntegrator, Integrator
@@ -127,6 +131,7 @@ class RaceCar(object):
         self.mlp_ay = np.float32(0.0)
         self.mlp_vx_history = None
         self.simulator_gru = None
+        self.hybrid_lateral_model = None
         if self.model == DynamicModel.KINEMATIC_MLP:
             self.mlp_weights = load_weights(self.params["mlp_weights_path"])
         elif self.model == DynamicModel.KINEMATIC_NOSLIP_NOIMU_DIRECT_SPEED:
@@ -135,6 +140,11 @@ class RaceCar(object):
         elif self.model == DynamicModel.DYNAMIC_MLP_RESIDUAL:
             self.mlp_weights, self.direct_mean, self.direct_std = load_dynamic_residual_weights(
                 self.params["dynamic_mlp_weights_path"])
+        elif self.model == DynamicModel.E2E_RESIDUAL_HYBRID:
+            self.mlp_weights, self.direct_mean, self.direct_std = load_dynamic_residual_weights(
+                self.params["dynamic_mlp_weights_path"])
+            self.hybrid_lateral_model = load_hybrid_lateral_model(
+                self.params["e2e_residual_hybrid_model_path"])
         elif self.model == DynamicModel.SIMULATOR_GRU:
             self.simulator_gru = SimulatorGRUPlant(
                 self.params["simulator_gru_model_path"],
@@ -427,6 +437,59 @@ class RaceCar(object):
                 self.mlp_substep_target = None
             return current_scan
 
+        if self.model == DynamicModel.E2E_RESIDUAL_HYBRID:
+            if self.mlp_substep_index == 0:
+                self.mlp_substep_start = self.state.copy()
+                (self.mlp_substep_target, self.mlp_command_history,
+                 self.mlp_actuator_steer, self.mlp_speed_reference,
+                 self.mlp_imu, self.mlp_vx_history) = e2e_residual_hybrid_step(
+                    self.mlp_substep_start, raw_steer, vel,
+                    self.mlp_command_history, self.mlp_actuator_steer,
+                    self.mlp_speed_reference, self.mlp_weights,
+                    self.direct_mean, self.direct_std,
+                    self.hybrid_lateral_model,
+                    current_accel=self.mlp_imu[1:3],
+                    vx_history=self.mlp_vx_history, dt=self.mlp_model_dt,
+                    lf=self.params["lf"], lr=self.params["lr"], mass=self.params["mass"],
+                    min_speed=self.params["v_min_mppi"], max_speed=self.params["v_max_mppi"],
+                    min_accel=self.params["min_accel_mppi"], max_accel=self.params["max_accel_mppi"],
+                    speed_servo_kp=self.params["speed_servo_kp"],
+                    speed_accel_tau=self.params["speed_reference_accel_time_constant"],
+                    speed_brake_tau=self.params["speed_reference_brake_time_constant"],
+                    max_speed_reference_rate=self.params["actuator_max_speed_reference_rate"],
+                    steer_scale=self.params["kinematic_steer_scale"],
+                    steer_bias=self.params["kinematic_steer_bias"],
+                    steer_time_constant=self.params["steer_servo_time_constant"],
+                    max_steer=self.params["s_max"],
+                    max_steer_rate=self.params["actuator_max_steer_rate"],
+                    position_speed_scale=self.params["kinematic_position_speed_scale"],
+                    Bf=self.params["dynamic_mlp_B_f"], Cf=self.params["dynamic_mlp_C_f"],
+                    Df=self.params["dynamic_mlp_D_f"], Ef=self.params["dynamic_mlp_E_f"],
+                    Br=self.params["dynamic_mlp_B_r"], Cr=self.params["dynamic_mlp_C_r"],
+                    Dr=self.params["dynamic_mlp_D_r"], Er=self.params["dynamic_mlp_E_r"],
+                    Iz=self.params["dynamic_mlp_I_z"],
+                    mlp_max_residual_ax=self.params["mlp_max_residual_ax"],
+                    mlp_max_residual_ay=self.params["mlp_max_residual_ay"],
+                    mlp_max_residual_yaw_accel=self.params["mlp_max_residual_yaw_accel"])
+            self.mlp_substep_index += 1
+            fraction = np.float32(self.mlp_substep_index / self.mlp_model_substeps)
+            self.state = (self.mlp_substep_start + fraction *
+                          (self.mlp_substep_target-self.mlp_substep_start))
+            for angle_index in (4, 6):
+                angle_delta = np.arctan2(
+                    np.sin(self.mlp_substep_target[angle_index]-self.mlp_substep_start[angle_index]),
+                    np.cos(self.mlp_substep_target[angle_index]-self.mlp_substep_start[angle_index]))
+                self.state[angle_index] = self.mlp_substep_start[angle_index] + fraction*angle_delta
+            if self.mlp_substep_index == self.mlp_model_substeps:
+                self.state = self.mlp_substep_target
+                self.mlp_substep_index = 0
+            current_scan = self.scan_simulator.scan(
+                np.append(self.state[0:2], self.state[4]), self.scan_rng)
+            self.check_ttc(current_scan)
+            if self.in_collision:
+                self.mlp_substep_index = 0
+            return current_scan
+
         if self.model == DynamicModel.DYNAMIC_SERVO_LAG:
             # MPPI evaluates this model once per 40 ms knot. Interpolate that
             # exact transition over the simulator's 10 ms publication ticks.
@@ -472,6 +535,20 @@ class RaceCar(object):
             self.check_ttc(current_scan)
             if self.in_collision:
                 self.mlp_substep_index = 0
+            return current_scan
+
+        if self.model == DynamicModel.LCMPC_ST:
+            # `vel` is the Ackermann acceleration field (drive_with_accel).
+            p = self.params
+            self.state = lcmpc_st_step(
+                np.asarray(self.state, dtype=np.float64), float(raw_steer), float(vel),
+                float(self.time_step), p["mu"], p["C_Sf"], p["C_Sr"], p["lf"],
+                p["lr"], p["h"], p["m"], p["I"], p["lcmpc_Cm0"],
+                p["lcmpc_vel_threshold"], p["s_max"], p["lcmpc_accel_max"],
+                p["lcmpc_decel_max"], p["v_max"])
+            current_scan = self.scan_simulator.scan(
+                np.append(self.state[0:2], self.state[4]), self.scan_rng)
+            self.check_ttc(current_scan)
             return current_scan
 
         if self.model == DynamicModel.KINEMATIC_NOSLIP_NOIMU_DIRECT_SPEED:
